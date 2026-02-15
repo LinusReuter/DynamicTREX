@@ -1,5 +1,6 @@
 /**********************************************************************************
 
+ Copyright (c) 2026-2026 Linus Reuter
  Copyright (c) 2023-2025 Patrick Steil
  Copyright (c) 2019-2022 KIT ITI Algorithmics Group
 
@@ -25,15 +26,47 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 **********************************************************************************/
 #pragma once
 
+#if defined(__aarch64__) || defined(__arm__)
+#include <arm_neon.h>
+#else
 #include <emmintrin.h>
+#endif
 
 #include <cassert>
+#include <cstring>
 #include <vector>
 
 #include "../../../DataStructures/TripBased/Data.h"
 #include "../../../ExternalLibs/aligned_allocator.h"
 
 namespace TripBased {
+
+// ---------------------------------------------------------------------------
+// Platform-agnostic 128-bit vector helpers
+// ---------------------------------------------------------------------------
+#if defined(__aarch64__) || defined(__arm__)
+// ARM NEON path ----------------------------------------------------------
+using simd128_t = uint8x16_t;
+
+inline simd128_t simd_set1_u8(uint8_t val) { return vdupq_n_u8(val); }
+inline simd128_t simd_max_u8(simd128_t a, simd128_t b) { return vmaxq_u8(a, b); }
+inline simd128_t simd_min_u8(simd128_t a, simd128_t b) { return vminq_u8(a, b); }
+
+// Build a mask where bytes 0..round-2 are 0xFF and the rest are 0x00.
+inline simd128_t makeMask(uint8_t round) {
+  uint8_t buf[16] = {};
+  for (int i = 0; i < static_cast<int>(round) - 1 && i < 16; ++i)
+    buf[i] = 0xFF;
+  return vld1q_u8(buf);
+}
+
+#else
+// x86 SSE2 path ----------------------------------------------------------
+using simd128_t = __m128i;
+
+inline simd128_t simd_set1_u8(uint8_t val) { return _mm_set1_epi8(static_cast<char>(val)); }
+inline simd128_t simd_max_u8(simd128_t a, simd128_t b) { return _mm_max_epu8(a, b); }
+inline simd128_t simd_min_u8(simd128_t a, simd128_t b) { return _mm_min_epu8(a, b); }
 
 static constexpr const __m128i MAX_MASKS[16] = {0x0000000000000000,
                                                 0x0000000000000000,
@@ -68,6 +101,14 @@ static constexpr const __m128i MAX_MASKS[16] = {0x0000000000000000,
                                                 -1,
                                                 0x00FFFFFFFFFFFFFF};
 
+inline simd128_t makeMask(uint8_t round) { return MAX_MASKS[round - 1]; }
+
+#endif  // platform select
+
+// ---------------------------------------------------------------------------
+// ProfileReachedIndexSIMD
+// ---------------------------------------------------------------------------
+
 //! Allows to check whether we already reached a certain point in a route / trip
 //! / position given a number of rounds. Lookup is fast, but updating is slow.
 //! This ReachedIndex is used for the TB::ProfileQuery. It uses SIMD intrisics
@@ -77,7 +118,7 @@ class ProfileReachedIndexSIMD {
   //! This union holds the values (aligned to use SIMD intrisics)
   union alignas(16) ReachedElement {
     ReachedElement() {}
-    __m128i mValues;
+    simd128_t mValues;
     u_int8_t values[16];
   };
 
@@ -110,9 +151,9 @@ class ProfileReachedIndexSIMD {
     assert(0 < round);
     assert(round < 16);
 
-    __m128i mask = MAX_MASKS[round - 1];
+    simd128_t mask = makeMask(round);
 
-    const __m128i FILTER = _mm_max_epu8(_mm_set1_epi8(position), mask);
+    const simd128_t FILTER = simd_max_u8(simd_set1_u8(position), mask);
 
     // Iterate over all trips either until the last trip OR if we already have a
     // trip with a position at least as good
@@ -120,7 +161,7 @@ class ProfileReachedIndexSIMD {
          tr < data.firstTripOfRoute[data.routeOfTrip[trip] + 1] &&
          getPosition(tr, round) > position;
          ++tr)
-      labels[tr].mValues = _mm_min_epu8(labels[tr].mValues, FILTER);
+      labels[tr].mValues = simd_min_u8(labels[tr].mValues, FILTER);
   }
 
   inline u_int8_t& operator()(const TripId trip,
@@ -135,11 +176,11 @@ class ProfileReachedIndexSIMD {
   }
 
   //! Returns the filter mask to use
-  inline __m128i getMask(const uint8_t round = 1) const noexcept {
+  inline simd128_t getMask(const uint8_t round = 1) const noexcept {
     assert(0 < round);
     assert(round < 16);
 
-    return MAX_MASKS[round];
+    return makeMask(round);
   }
 
   const Data& data;

@@ -3,7 +3,13 @@
 #ifdef _WIN32
 #include <malloc.h>
 #endif
-#include <immintrin.h>  // Include for SIMD intrinsics
+
+// Platform-specific SIMD / aligned-allocation headers
+#if defined(__aarch64__) || defined(__arm__)
+#include <cstdlib>  // aligned_alloc / free
+#else
+#include <immintrin.h>  // x86 SIMD intrinsics (_mm_malloc / _mm_free)
+#endif
 
 #include <cstdint>
 #include <iostream>
@@ -17,6 +23,9 @@
  *
  * Modified from the Mallocator from Stephan T. Lavavej.
  * <http://blogs.msdn.com/b/vcblog/archive/2008/08/28/the-mallocator.aspx>
+ *
+ * On ARM (aarch64) we use std::aligned_alloc / std::free instead of the
+ * x86-only _mm_malloc / _mm_free.
  */
 template <typename T, std::size_t Alignment>
 class aligned_allocator {
@@ -97,8 +106,16 @@ class aligned_allocator {
           "aligned_allocator<T>::allocate() - Integer overflow.");
     }
 
-    // Mallocator wraps malloc().
-    void* const pv = _mm_malloc(n * sizeof(T), Alignment);
+    // Round up size to a multiple of Alignment (required by aligned_alloc)
+    const std::size_t total = n * sizeof(T);
+    const std::size_t aligned_total = (total + Alignment - 1) & ~(Alignment - 1);
+
+#if defined(__aarch64__) || defined(__arm__)
+    void* const pv = std::aligned_alloc(Alignment, aligned_total);
+#else
+    (void)aligned_total;
+    void* const pv = _mm_malloc(total, Alignment);
+#endif
 
     // Allocators should throw std::bad_alloc in the case of memory allocation
     // failure.
@@ -110,7 +127,11 @@ class aligned_allocator {
   }
 
   void deallocate(T* const p, [[maybe_unused]] const std::size_t n) const {
+#if defined(__aarch64__) || defined(__arm__)
+    std::free(p);
+#else
     _mm_free(p);
+#endif
   }
 
   // The following will be the same for all allocators that ignore hints.

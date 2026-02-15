@@ -24,11 +24,111 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 **********************************************************************************/
 #pragma once
 
+#if defined(__aarch64__) || defined(__arm__)
+#include <arm_neon.h>
+#else
 #include <immintrin.h>
+#endif
 
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+
+// ---------------------------------------------------------------------------
+// ARM NEON path: emulate 256-bit with two 128-bit NEON registers
+// ---------------------------------------------------------------------------
+#if defined(__aarch64__) || defined(__arm__)
+
+union Holder {
+  struct { uint16x8_t lo; uint16x8_t hi; };
+  std::uint16_t arr[16];
+};
+
+struct SIMD16u {
+  Holder v;
+
+  SIMD16u() noexcept = default;
+  SIMD16u(uint16x8_t lo, uint16x8_t hi) noexcept { v.lo = lo; v.hi = hi; }
+  SIMD16u(uint16_t scalar) noexcept { v.lo = vdupq_n_u16(scalar); v.hi = vdupq_n_u16(scalar); }
+  void fill(uint16_t scalar) noexcept { v.lo = vdupq_n_u16(scalar); v.hi = vdupq_n_u16(scalar); }
+
+  static SIMD16u load(const uint16_t *ptr) noexcept {
+    SIMD16u r;
+    r.v.lo = vld1q_u16(ptr);
+    r.v.hi = vld1q_u16(ptr + 8);
+    return r;
+  }
+  void store(uint16_t *ptr) const noexcept {
+    vst1q_u16(ptr, v.lo);
+    vst1q_u16(ptr + 8, v.hi);
+  }
+
+  uint16_t &operator[](std::size_t i) noexcept { return v.arr[i & 15]; }
+  const uint16_t &operator[](std::size_t i) const noexcept { return v.arr[i & 15]; }
+
+  SIMD16u operator+(const SIMD16u &o) const noexcept {
+    return SIMD16u(vaddq_u16(v.lo, o.v.lo), vaddq_u16(v.hi, o.v.hi));
+  }
+  SIMD16u operator-(const SIMD16u &o) const noexcept {
+    return SIMD16u(vsubq_u16(v.lo, o.v.lo), vsubq_u16(v.hi, o.v.hi));
+  }
+
+  SIMD16u operator&(const SIMD16u &o) const noexcept {
+    return SIMD16u(vandq_u16(v.lo, o.v.lo), vandq_u16(v.hi, o.v.hi));
+  }
+  SIMD16u operator|(const SIMD16u &o) const noexcept {
+    return SIMD16u(vorrq_u16(v.lo, o.v.lo), vorrq_u16(v.hi, o.v.hi));
+  }
+  SIMD16u operator^(const SIMD16u &o) const noexcept {
+    return SIMD16u(veorq_u16(v.lo, o.v.lo), veorq_u16(v.hi, o.v.hi));
+  }
+
+  SIMD16u sll(int bits) const noexcept {
+    int16x8_t shift = vdupq_n_s16(static_cast<int16_t>(bits));
+    return SIMD16u(vshlq_u16(v.lo, shift), vshlq_u16(v.hi, shift));
+  }
+  SIMD16u srl(int bits) const noexcept {
+    int16x8_t shift = vdupq_n_s16(static_cast<int16_t>(-bits));
+    return SIMD16u(vshlq_u16(v.lo, shift), vshlq_u16(v.hi, shift));
+  }
+
+  SIMD16u cmpeq(const SIMD16u &o) const noexcept {
+    return SIMD16u(vceqq_u16(v.lo, o.v.lo), vceqq_u16(v.hi, o.v.hi));
+  }
+
+  // max: sets v to max(v, o), returns mask where v was already >= o (all-ones per lane)
+  SIMD16u maxmask(const SIMD16u &o) noexcept {
+    uint16x8_t mlo = vmaxq_u16(v.lo, o.v.lo);
+    uint16x8_t mhi = vmaxq_u16(v.hi, o.v.hi);
+    uint16x8_t eq0lo = vceqq_u16(mlo, v.lo);
+    uint16x8_t eq0hi = vceqq_u16(mhi, v.hi);
+    v.lo = mlo;
+    v.hi = mhi;
+    return SIMD16u(eq0lo, eq0hi);
+  }
+
+  // min: sets v to min(v, o), returns mask where v was already <= o (all-ones per lane)
+  SIMD16u minmask(const SIMD16u &o) noexcept {
+    uint16x8_t mlo = vminq_u16(v.lo, o.v.lo);
+    uint16x8_t mhi = vminq_u16(v.hi, o.v.hi);
+    uint16x8_t eq0lo = vceqq_u16(mlo, v.lo);
+    uint16x8_t eq0hi = vceqq_u16(mhi, v.hi);
+    v.lo = mlo;
+    v.hi = mhi;
+    return SIMD16u(eq0lo, eq0hi);
+  }
+
+  void blend(const SIMD16u &other, const SIMD16u &mask) noexcept {
+    // vbslq: for each bit, selects from first arg where mask is 1, second where 0
+    v.lo = vbslq_u16(mask.v.lo, v.lo, other.v.lo);
+    v.hi = vbslq_u16(mask.v.hi, v.hi, other.v.hi);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// x86 AVX2 path: original implementation
+// ---------------------------------------------------------------------------
+#else
 
 union Holder {
   __m256i reg;
@@ -102,7 +202,9 @@ struct SIMD16u {
   }
 };
 
-void printSIMD(const char *name, const SIMD16u &x) {
+#endif  // platform select
+
+inline void printSIMD(const char *name, const SIMD16u &x) {
   std::cout << std::setw(10) << name << ": [";
   for (int i = 0; i < 16; ++i) {
     std::cout << x.v.arr[i] << (i < 15 ? ", " : "");

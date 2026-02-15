@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cxxabi.h>
-#include <emmintrin.h>
 
 #include <cstdlib>
 #include <iostream>
