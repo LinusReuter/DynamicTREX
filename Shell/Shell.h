@@ -66,6 +66,7 @@ class Help : public ParameterizedCommand {
     }
   }
 
+  using ParameterizedCommand::parameterSuggestions;
   virtual std::vector<std::string> parameterSuggestions() const {
     std::vector<std::string> suggestions;
     for (Command* command : shell.getCommands()) {

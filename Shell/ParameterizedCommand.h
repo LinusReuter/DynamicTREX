@@ -126,6 +126,7 @@ class ParameterizedCommand : public Command {
 
   virtual void execute() = 0;
 
+  using Command::parameterSuggestions;
   virtual std::vector<std::string> parameterSuggestions(
       const size_t index) const {
     if ((index < parameters.size()) && (!parameters[index].options.empty())) {
