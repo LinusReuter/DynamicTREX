@@ -1,8 +1,17 @@
 #pragma once
 
+#ifdef __linux__
 #include <numa.h>
-#include <omp.h>
 #include <sched.h>
+#endif
+
+#ifdef __APPLE__
+#include <pthread.h>
+#include <mach/thread_act.h>
+#include <mach/thread_policy.h>
+#endif
+
+#include <omp.h>
 
 #include <cmath>
 #include <iomanip>
@@ -12,6 +21,57 @@
 
 #include "Assert.h"
 
+// ---------------------------------------------------------------------------
+// pinThreadToCoreId - platform-specific
+// ---------------------------------------------------------------------------
+#ifdef __linux__
+inline void pinThreadToCoreId(const size_t coreId) noexcept {
+  cpu_set_t mask;
+  CPU_ZERO(&mask);
+  CPU_SET(coreId, &mask);
+  sched_setaffinity(0, sizeof(mask), &mask);
+}
+#elif defined(__APPLE__)
+inline void pinThreadToCoreId(const size_t coreId) noexcept {
+  thread_affinity_policy_data_t policy;
+  policy.affinity_tag = static_cast<integer_t>(coreId + 1);
+  thread_policy_set(pthread_mach_thread_np(pthread_self()),
+                    THREAD_AFFINITY_POLICY,
+                    reinterpret_cast<thread_policy_t>(&policy),
+                    THREAD_AFFINITY_POLICY_COUNT);
+}
+#else
+inline void pinThreadToCoreId([[maybe_unused]] const size_t coreId) noexcept {}
+#endif
+
+inline size_t numberOfCores() noexcept {
+  return std::thread::hardware_concurrency();
+}
+
+// ---------------------------------------------------------------------------
+// ThreadPinning - portable
+// ---------------------------------------------------------------------------
+class ThreadPinning {
+ public:
+  ThreadPinning(const size_t numberOfThreads, const size_t pinMultiplier)
+      : numberOfThreads(numberOfThreads), pinMultiplier(pinMultiplier) {}
+
+  inline void pinThread() const noexcept {
+    pinThreadToCoreId((omp_get_thread_num() * pinMultiplier) % numberOfCores());
+    AssertMsg(static_cast<size_t>(omp_get_num_threads()) == numberOfThreads,
+              "Number of threads is " << omp_get_num_threads()
+                                      << ", but should be " << numberOfThreads
+                                      << "!");
+  }
+
+  size_t numberOfThreads;
+  size_t pinMultiplier;
+};
+
+// ---------------------------------------------------------------------------
+// ThreadScheduler - Linux only (requires libnuma)
+// ---------------------------------------------------------------------------
+#ifdef __linux__
 class ThreadScheduler {
  public:
   ThreadScheduler(const std::string strategy,
@@ -139,31 +199,4 @@ class ThreadScheduler {
   std::vector<std::vector<size_t>> numaNodeToLogicalCpus;
   size_t numNumaNodesUsed;
 };
-
-inline void pinThreadToCoreId(const size_t coreId) noexcept {
-  cpu_set_t mask;
-  CPU_ZERO(&mask);
-  CPU_SET(coreId, &mask);
-  sched_setaffinity(0, sizeof(mask), &mask);
-}
-
-inline size_t numberOfCores() noexcept {
-  return std::thread::hardware_concurrency();
-}
-
-class ThreadPinning {
- public:
-  ThreadPinning(const size_t numberOfThreads, const size_t pinMultiplier)
-      : numberOfThreads(numberOfThreads), pinMultiplier(pinMultiplier) {}
-
-  inline void pinThread() const noexcept {
-    pinThreadToCoreId((omp_get_thread_num() * pinMultiplier) % numberOfCores());
-    AssertMsg(static_cast<size_t>(omp_get_num_threads()) == numberOfThreads,
-              "Number of threads is " << omp_get_num_threads()
-                                      << ", but should be " << numberOfThreads
-                                      << "!");
-  }
-
-  size_t numberOfThreads;
-  size_t pinMultiplier;
-};
+#endif  // __linux__
