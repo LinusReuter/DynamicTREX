@@ -24,6 +24,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 **********************************************************************************/
 #include "Commands/TREX.h"
+#include "Commands/TimeTable.h"
 
 #include "../Helpers/Console/CommandLineParser.h"
 #include "../Shell/Shell.h"
@@ -91,6 +92,9 @@ int main(int argc, char** argv) {
     new CompareGeoToLength(shell);
 
     new MeasureTransferGeneration(shell);
+
+    new RAPTORToTimeTable(shell);
+
     shell.run();
     return 0;
 }

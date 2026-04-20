@@ -28,6 +28,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../Shell/Shell.h"
 #include "Commands/NetworkIO.h"
 #include "Commands/NetworkTools.h"
+#include "Commands/TimeTable.h"
 
 using namespace Shell;
 
@@ -36,12 +37,20 @@ int main(int argc, char** argv) {
     pinThreadToCoreId(clp.value<int>("core", 1));
     checkAsserts();
     ::Shell::Shell shell;
+
     new ParseGTFS(shell);
     new GTFSToIntermediate(shell);
     new IntermediateToCSA(shell);
     new IntermediateToRAPTOR(shell);
     new IntermediateToTD(shell);
     new IntermediateToTE(shell);
+
+    // Multimodal / mode-aware builders (from dynamic timetable branch)
+    new BuildMultimodalRAPTORData(shell);
+    new AddModeToMultimodalRAPTORData(shell);
+    new BuildMultimodalTripBasedData(shell);
+    new AddModeToMultimodalTripBasedData(shell);
+
     new LoadDimacsGraph(shell);
     new DuplicateTrips(shell);
     new AddGraph(shell);
@@ -59,6 +68,11 @@ int main(int argc, char** argv) {
     new WriteRAPTORToCSV(shell);
     new WriteTripBasedToCSV(shell);
     new WriteRAPTORLayoutGraphToMetis(shell);
+
+    // Time table & partition related commands (from dynamic timetable branch)
+    new RAPTORToTimeTable(shell);
+    new LoadAndApplyPartition(shell);
+
     shell.run();
     return 0;
 }

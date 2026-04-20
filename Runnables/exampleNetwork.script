@@ -7,3 +7,4 @@ reduceToMaximumConnectedComponent ../Datasets/Karlsruhe/intermediate.binary ../D
 reduceGraph ../Datasets/Karlsruhe/intermediate.binary ../Datasets/Karlsruhe/intermediate.binary
 intermediateToRAPTOR ../Datasets/Karlsruhe/intermediate.binary ../Datasets/Karlsruhe/raptor.binary
 intermediateToCSA ../Datasets/Karlsruhe/intermediate.binary ../Datasets/Karlsruhe/csa.binary
+raptorToTimeTable ../Datasets/Karlsruhe/raptor.binary ../Datasets/Karlsruhe/timetable.binary
