@@ -69,7 +69,6 @@ int main(int argc, char **argv) {
   new RunTransitiveCSAQueries(shell);
   new RunTransitiveProfileTripBasedQueries(shell);
 
-  new RunGeoRankedRAPTORQueries(shell);
   new RunGeoRankedTripBasedQueries(shell);
   new RunGeoRankedTREXQueries(shell);
 
@@ -91,6 +90,8 @@ int main(int argc, char **argv) {
   new StopsImportance(shell);
 
   new CompareGeoToLength(shell);
+
+  new MeasureTransferGeneration(shell);
   shell.run();
   return 0;
 }

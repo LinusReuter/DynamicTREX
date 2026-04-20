@@ -29,12 +29,14 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <iostream>
 #include <set>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "../../Algorithms/TREX/BorderStops.h"
 #include "../../Algorithms/TREX/Preprocessing/BuilderIBEs.h"
 #include "../../Algorithms/TREX/Preprocessing/TBTEGraph.h"
 #include "../../Algorithms/TREX/Query/TREXProfileQuery.h"
+#include "../../Algorithms/TREX/Query/TREXProfileQueryOverlay.h"
 #include "../../Algorithms/TREX/Query/TREXQuery.h"
 #include "../../Algorithms/TREX/Query/TREXQueryOverlay.h"
 #include "../../Algorithms/TripBased/Preprocessing/StopEventGraphBuilder.h"
@@ -299,6 +301,7 @@ public:
     addParameter("Use overlay graphs?");
     addParameter("Compare to TB?", "false");
     addParameter("TB Input for eval", ".");
+    addParameter("Verbose?", "false");
   }
 
   virtual void execute() noexcept {
@@ -306,6 +309,7 @@ public:
     const bool eval = getParameter<bool>("Compare to TB?");
     const bool overlay = getParameter<bool>("Use overlay graphs?");
     const std::string evalFile = getParameter("TB Input for eval");
+    const bool verbose = getParameter<bool>("Verbose?");
 
     TripBased::TREXData data(tripFile);
     data.printInfo();
@@ -320,14 +324,40 @@ public:
     size_t numberOfJourneys = 0;
 
     auto run = [&](auto &algo) {
+      algo.printMemoryConsumption();
       size_t i(0);
       for (const StopQuery &query : queries) {
+        if (verbose)
+          std::cout << "Query " << (int)query.source << ", "
+                    << (int)query.target << ", " << (int)query.departureTime
+                    << std::endl;
         algo.run(query.source, query.departureTime, query.target);
         numberOfJourneys += algo.getJourneys().size();
+
+        if (verbose) {
+          std::cout << "TREX Query" << std::endl;
+          for (auto &journey : algo.getJourneys()) {
+            std::cout << query << std::endl;
+            for (auto &leg : journey) {
+              std::cout << (int)leg.from << " -> " << (int)leg.to << " @ "
+                        << leg.departureTime << " -> " << leg.arrivalTime
+                        << (leg.usesRoute ? ", route: " : ", transfer: ")
+                        << (int)leg.routeId;
+
+              std::cout << std::endl;
+            }
+            std::cout << std::endl;
+          }
+        }
+
         result[i].reserve(algo.getArrivals().size());
         for (auto &arr : algo.getArrivals()) {
           result[i].push_back(
               std::make_pair(arr.numberOfTrips, arr.arrivalTime));
+
+          if (verbose)
+            std::cout << "Nr Trips: " << (int)arr.numberOfTrips
+                      << ", Arr Time: " << (int)arr.arrivalTime << std::endl;
         }
 
         i += 1;
@@ -359,33 +389,34 @@ public:
       numberOfJourneys = 0;
       std::size_t i = 0;
       for (const StopQuery &query : queries) {
+        if (verbose)
+          std::cout << "Query " << (int)query.source << ", "
+                    << (int)query.target << ", " << (int)query.departureTime
+                    << std::endl;
         tripAlgorithm.run(query.source, query.departureTime, query.target);
         numberOfJourneys += tripAlgorithm.getJourneys().size();
 
-        /*
-        std::cout << "TB Query" << std::endl;
-        for (auto &journey : tripAlgorithm.getJourneys()) {
-          std::cout << query << std::endl;
-          for (auto &leg : journey) {
-            std::cout << (int)leg.from << " -> " << (int)leg.to << " @ "
-                      << leg.departureTime << " -> " << leg.arrivalTime
-                      << (leg.usesRoute ? ", route: " : ", transfer: ")
-                      << (int)leg.routeId;
+        if (verbose) {
+          std::cout << "TB Query" << std::endl;
+          for (auto &journey : tripAlgorithm.getJourneys()) {
+            std::cout << query << std::endl;
+            for (auto &leg : journey) {
+              std::cout << (int)leg.from << " -> " << (int)leg.to << " @ "
+                        << leg.departureTime << " -> " << leg.arrivalTime
+                        << (leg.usesRoute ? ", route: " : ", transfer: ")
+                        << (int)leg.routeId;
 
+              std::cout << std::endl;
+            }
             std::cout << std::endl;
           }
-          std::cout << std::endl;
         }
-        */
 
         tripResult[i].reserve(tripAlgorithm.getArrivals().size());
 
         for (auto &arr : tripAlgorithm.getArrivals()) {
           tripResult[i].push_back(
               std::make_pair(arr.numberOfTrips, arr.arrivalTime));
-          /* std::cout << "Nr Trips: " << (int)arr.numberOfTrips */
-          /*           << ", Arrival Time; " << (int)arr.arrivalTime <<
-           * std::endl; */
         }
 
         i += 1;
@@ -425,25 +456,37 @@ public:
                              "a time range of [0, 24 hours).") {
     addParameter("TREX input file");
     addParameter("Number of queries");
+    addParameter("Use overlay graphs?");
   }
 
   virtual void execute() noexcept {
     TripBased::TREXData data(getParameter("TREX input file"));
     data.printInfo();
-    TripBased::TREXProfileQuery<TripBased::AggregateProfiler> algorithm(data);
+    const bool overlay = getParameter<bool>("Use overlay graphs?");
 
     const size_t n = getParameter<size_t>("Number of queries");
     const std::vector<StopQuery> queries =
         generateRandomStopQueries(data.numberOfStops(), n);
 
-    double numJourneys = 0;
-    for (const StopQuery &query : queries) {
-      algorithm.run(query.source, query.target, 0, 24 * 60 * 60 - 1);
-      numJourneys += algorithm.getAllJourneys().size();
+    auto run = [&](auto &algo) {
+      double numJourneys = 0;
+      for (const StopQuery &query : queries) {
+        algo.run(query.source, query.target, 0, 24 * 60 * 60 - 1);
+        numJourneys += algo.getAllJourneys().size();
+      }
+      algo.getProfiler().printStatistics();
+      std::cout << "Avg. journeys: " << String::prettyDouble(numJourneys / n)
+                << std::endl;
+    };
+
+    if (overlay) {
+      TripBased::TREXProfileQueryOverlay<TripBased::AggregateProfiler>
+          algorithm(data);
+      run(algorithm);
+    } else {
+      TripBased::TREXProfileQuery<TripBased::AggregateProfiler> algorithm(data);
+      run(algorithm);
     }
-    algorithm.getProfiler().printStatistics();
-    std::cout << "Avg. journeys: " << String::prettyDouble(numJourneys / n)
-              << std::endl;
   }
 };
 
@@ -514,10 +557,10 @@ public:
 class RunGeoRankedTREXQueries : public ParameterizedCommand {
 public:
   RunGeoRankedTREXQueries(BasicShell &shell)
-      : ParameterizedCommand(shell, "runGeoRankedTREXQueries",
-                             "Runs TREX queries to the 2^r th stop, where "
-                             "r is the geo rank. "
-                             "Source stops are chosen randomly.") {
+      : ParameterizedCommand(
+            shell, "runGeoRankedTREXQueries",
+            "Runs TREX queries to the 2^r th stop, where r is the geo rank. "
+            "Source stops are chosen randomly.") {
     addParameter("TREX input file");
     addParameter("Number of source stops");
     addParameter("Output csv file");
@@ -528,14 +571,17 @@ public:
     const std::string file = getParameter("Output csv file");
     TripBased::TREXData data(getParameter("TREX input file"));
     data.printInfo();
-    TripBased::TREXQuery<TripBased::AggregateProfiler> algorithm(data);
+    TripBased::TREXQueryOverlay<TripBased::AggregateProfiler> algorithm(data);
 
     const size_t n = getParameter<size_t>("Number of source stops");
     const int minR = getParameter<int>("Lowest r");
 
-    std::mt19937 randomGenerator(42);
-    std::uniform_int_distribution<> stopDistribution(0,
-                                                     data.numberOfStops() - 1);
+    AssertMsg(minR >= 0, "Lowest r must be >= 0");
+
+    const size_t numStops = data.numberOfStops();
+
+    std::mt19937 randomGenerator(123);
+    std::uniform_int_distribution<> stopDistribution(0, numStops - 1);
     std::uniform_int_distribution<> timeDistribution(0, (24 * 60 * 60) - 1);
 
     std::vector<StopId> sources;
@@ -545,69 +591,92 @@ public:
       sources.emplace_back(stopDistribution(randomGenerator));
     }
 
-    int maxR = std::floor(std::log2(data.numberOfStops()));
+    // largest r such that 2^r < numStops
+    int maxR = static_cast<int>(std::floor(std::log2(numStops - 1)));
 
-    if (maxR <= minR) {
-      std::cout << "Too few stops; maxR <= minR!" << std::endl;
+    if (maxR < minR) {
+      std::cout << "Too few stops; maxR < minR!" << std::endl;
       return;
     }
 
+    const size_t numRanks = maxR - minR + 1;
+
     std::vector<double> queryRunTimes;
-    queryRunTimes.reserve(n * (maxR - minR + 1));
+    queryRunTimes.reserve(n * numRanks);
 
-    for (auto &source : sources) {
-      std::vector<size_t> allStopsSorted(data.numberOfStops());
-      std::iota(allStopsSorted.begin(), allStopsSorted.end(), 0);
+    std::vector<size_t> baseStops(numStops);
+    std::iota(baseStops.begin(), baseStops.end(), 0);
 
-      std::sort(allStopsSorted.begin(), allStopsSorted.end(),
-                [&](int i1, int i2) {
-                  return data.raptorData.stopData[i1].dist(
-                             data.raptorData.stopData[source]) <
-                         data.raptorData.stopData[i2].dist(
-                             data.raptorData.stopData[source]);
-                });
+    std::vector<size_t> stops(numStops);
+
+    std::vector<StopQuery> queries;
+    queries.reserve(maxR);
+
+    Progress progress(sources.size());
+
+    for (StopId source : sources) {
+      stops = baseStops;
+
+      auto distCmp = [&](size_t a, size_t b) {
+        return data.raptorData.stopData[a].dist(
+                   data.raptorData.stopData[source]) <
+               data.raptorData.stopData[b].dist(
+                   data.raptorData.stopData[source]);
+      };
+
+      size_t prevIdx = 0;
 
       for (int r = minR; r <= maxR; ++r) {
-        if (static_cast<size_t>(1 << r) >= allStopsSorted.size()) {
-          std::cout << "TOOO MUCH!! r: " << r << " vs " << allStopsSorted.size()
-                    << std::endl;
-          break;
-        }
-        auto target = allStopsSorted[(1 << r)];
+        const size_t idx = size_t(1) << r;
+        assert(idx < stops.size());
+
+        std::nth_element(stops.begin() + prevIdx, stops.begin() + idx,
+                         stops.end(), distCmp);
+
+        StopId target = static_cast<StopId>(stops[idx]);
 
         int depTime = timeDistribution(randomGenerator);
 
-        algorithm.run(static_cast<StopId>(source), depTime,
-                      static_cast<StopId>(target));
+        queries.emplace_back(source, target, depTime);
+
+        prevIdx = idx;
+      }
+
+      for (const StopQuery &query : queries) {
+        algorithm.run(query.source, query.departureTime, query.target);
         queryRunTimes.emplace_back(algorithm.getProfiler().getTotalTime());
         algorithm.getProfiler().reset();
       }
+
+      queries.clear();
+
+      progress++;
     }
+
+    progress.finished();
 
     std::ofstream csv(file);
     AssertMsg(csv, "Cannot create output stream for " << file);
     AssertMsg(csv.is_open(), "Cannot open output stream for " << file);
 
     csv << "Index";
-
     for (int r = minR; r <= maxR; ++r) {
       csv << "," << r;
     }
     csv << "\n";
 
-    size_t i = 0;
-
     auto it = queryRunTimes.begin();
 
-    while (i < n) {
+    for (size_t i = 0; i < n; ++i) {
       csv << i;
-      for (int r = minR; r <= maxR; ++r, ++it) {
+      for (size_t j = 0; j < numRanks; ++j, ++it) {
         assert(it != queryRunTimes.end());
-        csv << "," << (*it);
+        csv << "," << *it;
       }
       csv << "\n";
-      ++i;
     }
+
+    assert(it == queryRunTimes.end());
   }
 };
 
@@ -916,4 +985,130 @@ public:
     TripBased::TREXData data(networkFile);
     data.exportStopFailureDistribution(outputFile);
   }
+};
+
+class MeasureTransferGeneration : public ParameterizedCommand {
+public:
+  MeasureTransferGeneration(BasicShell &shell)
+      : ParameterizedCommand(shell, "measureTransferGeneration",
+                             "Given the TB data, this updates the transfer set "
+                             "of X random trips.") {
+    addParameter("Input file (TREX Data)");
+    addParameter("Sampling Precentage", "5.0");
+    addParameter("Random Seed", "42");
+  }
+
+  inline void
+  findIncomingTrips(const TripBased::Data &data,
+                    const TransferGraph &revTransferGraph, const TripId trip,
+                    std::unordered_set<std::uint32_t> &allTrips) const {
+    const StopId *stops = data.stopArrayOfTrip(trip);
+    for (StopIndex i = StopIndex(0); i < data.numberOfStopsInTrip(trip) - 1;
+         i++) {
+      const StopId stop = stops[i];
+      const int departureTime = data.getStopEvent(trip, i).departureTime;
+      findRevTransfers(data, trip, i, stop, departureTime, allTrips);
+      for (const Edge edge : revTransferGraph.edgesFrom(stop)) {
+        const StopId toStop = StopId(revTransferGraph.get(ToVertex, edge));
+        const int transferTime = revTransferGraph.get(TravelTime, edge);
+        findRevTransfers(data, trip, i, toStop, departureTime - transferTime,
+                         allTrips);
+      }
+    }
+  }
+
+  inline void
+  findRevTransfers(const TripBased::Data &data, const TripId toTrip,
+                   const StopIndex toIndex, const StopId fromStop,
+                   const int fromDepartureTime,
+                   std::unordered_set<std::uint32_t> &allTrips) const noexcept {
+    const RouteId toRoute = data.routeOfTrip[toTrip];
+    for (const RAPTOR::RouteSegment &fromSegment :
+         data.raptorData.routesContainingStop(fromStop)) {
+      const TripId fromTrip =
+          data.getLatestTrip(fromSegment, fromDepartureTime);
+      if (fromTrip == noTripId)
+        continue;
+      if ((fromSegment.routeId == toRoute) && (fromTrip >= toTrip) &&
+          (fromSegment.stopIndex >= toIndex))
+        continue;
+      if (isUTurn(data, fromTrip, fromSegment.stopIndex, toTrip, toIndex))
+        continue;
+      allTrips.insert((uint32_t)fromTrip);
+    }
+  }
+
+  inline bool isUTurn(const TripBased::Data &data, const TripId fromTrip,
+                      const StopIndex fromIndex, const TripId toTrip,
+                      const StopIndex toIndex) const noexcept {
+    if (fromIndex < 2)
+      return false;
+    if (toIndex + 1 >= data.numberOfStopsInTrip(toTrip))
+      return false;
+    if (data.getStop(fromTrip, StopIndex(fromIndex - 1)) !=
+        data.getStop(toTrip, StopIndex(toIndex + 1)))
+      return false;
+    if (data.getStopEvent(fromTrip, StopIndex(fromIndex - 1)).arrivalTime >
+        data.getStopEvent(toTrip, StopIndex(toIndex + 1)).departureTime)
+      return false;
+    return true;
+  }
+
+  virtual void execute() noexcept {
+    const std::string tbFile = getParameter("Input file (TREX Data)");
+    const double percentage = getParameter<double>("Sampling Precentage");
+    const int randomSeed = getParameter<int>("Random Seed");
+
+    TripBased::Data data(tbFile);
+    data.printInfo();
+
+    TransferGraph revTransferGraph = data.raptorData.transferGraph;
+    revTransferGraph.revert();
+
+    std::vector<TripId> sampledTrips =
+        data.selectRandomTrips(percentage, randomSeed);
+
+    std::cout << "Sampled " << sampledTrips.size() << " many trips!"
+              << std::endl;
+    std::unordered_set<std::uint32_t> allTrips;
+    // collect not only sampled trips, but also all trips that could have a
+    // transfer towards a sampled trip
+    for (auto trip : sampledTrips) {
+      allTrips.insert((uint32_t)trip);
+      findIncomingTrips(data, revTransferGraph, trip, allTrips);
+    }
+
+    std::vector<TripId> toProcessTrips(allTrips.begin(), allTrips.end());
+
+    std::cout << "Collected " << toProcessTrips.size() << " many trips!"
+              << std::endl;
+
+    TripBased::StopEventGraphBuilder bobTheBuilder(data);
+
+    bobTheBuilder.getGeneratedStopEventGraph().reserve(
+        data.numberOfStopEvents(), toProcessTrips.size() * 3);
+
+    std::cout << "Generate full transfers" << std::endl;
+    Progress progFull(allTrips.size());
+    for (const auto trip : toProcessTrips) {
+      bobTheBuilder.generateFullTransfers(trip);
+      progFull++;
+    }
+    progFull.finished();
+
+    std::cout << "Full Transfers:       "
+              << bobTheBuilder.getGeneratedStopEventGraph().numEdges()
+              << std::endl;
+
+    std::cout << "Reduce full transfers" << std::endl;
+    Progress progRedu(toProcessTrips.size());
+    for (const auto trip : toProcessTrips) {
+      bobTheBuilder.reduceTransfers(trip);
+      progRedu++;
+    }
+    progRedu.finished();
+
+    std::cout << "Reduced Transfers:    "
+              << bobTheBuilder.getStopEventGraph().numEdges() << std::endl;
+  };
 };

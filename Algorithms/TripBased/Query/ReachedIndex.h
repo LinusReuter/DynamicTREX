@@ -32,20 +32,21 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 namespace TripBased {
 
 class ReachedIndex {
- public:
-  ReachedIndex(const Data& data)
-      : data(data),
-        labels(data.numberOfTrips(), -1),
-        defaultLabels(data.numberOfTrips(), -1) {
+public:
+  ReachedIndex(const Data &data)
+      : data(data), labels(data.numberOfTrips()),
+        defaultLabels(data.numberOfTrips()), routeEnd(data.numberOfTrips()) {
     for (const TripId trip : data.trips()) {
-      if (data.numberOfStopsInTrip(trip) > 255)
+      if (data.numberOfStopsInTrip(trip) > 255) {
         warning("Trip ", trip, " has ", data.numberOfStopsInTrip(trip),
                 " stops!");
+      }
       defaultLabels[trip] = data.numberOfStopsInTrip(trip);
+      routeEnd[trip] = data.firstTripOfRoute[data.routeOfTrip[trip] + 1];
     }
   }
 
- public:
+public:
   inline void clear() noexcept { labels = defaultLabels; }
 
   inline void clear(const RouteId route) noexcept {
@@ -56,8 +57,7 @@ class ReachedIndex {
   }
 
   inline StopIndex operator()(const TripId trip) const noexcept {
-    AssertMsg(trip < labels.size(), "Trip " << trip << " is out of bounds!");
-    return StopIndex(labels[trip]);
+    return static_cast<StopIndex>(labels[trip]);
   }
 
   inline bool alreadyReached(const TripId trip,
@@ -66,28 +66,33 @@ class ReachedIndex {
   }
 
   inline void update(const TripId trip, const StopIndex index) noexcept {
-    AssertMsg(trip < labels.size(), "Trip " << trip << " is out of bounds!");
-    const TripId routeEnd = data.firstTripOfRoute[data.routeOfTrip[trip] + 1];
-    for (TripId i = trip; i < routeEnd; i++) {
-      if (labels[i] <= index) break;
-      labels[i] = index;
+    const std::uint8_t newValue = index;
+    const uint32_t end = routeEnd[trip];
+
+    uint8_t *__restrict__ labelsPtr = labels.data();
+
+    uint32_t i = trip;
+    constexpr int UNROLL_FAKTOR = 16;
+    for (; i + UNROLL_FAKTOR < end; i += UNROLL_FAKTOR) {
+      if (labelsPtr[i] <= newValue)
+        return;
+      // THIS BETTER BE A CMOVE
+      for (int j = 0; j < UNROLL_FAKTOR; ++j) {
+        labelsPtr[i + j] = std::min(labelsPtr[i + j], newValue);
+      }
+    }
+
+    for (; i < end; ++i) {
+      labelsPtr[i] = std::min(labelsPtr[i], newValue);
     }
   }
 
-  inline void updateRaw(const TripId trip, const TripId tripEnd,
-                        const StopIndex index) noexcept {
-    AssertMsg(trip < labels.size(), "Trip " << trip << " is out of bounds!");
-    AssertMsg(tripEnd <= data.firstTripOfRoute[data.routeOfTrip[trip] + 1],
-              "Trip end" << tripEnd << " is out of bounds!");
-    std::fill(labels.begin() + trip, labels.begin() + tripEnd, index);
-  }
+private:
+  const Data &data;
 
- private:
-  const Data& data;
-
-  std::vector<u_int8_t> labels;
-
-  std::vector<u_int8_t> defaultLabels;
+  std::vector<uint8_t> labels;
+  std::vector<uint8_t> defaultLabels;
+  std::vector<uint32_t> routeEnd;
 };
 
-}  // namespace TripBased
+} // namespace TripBased

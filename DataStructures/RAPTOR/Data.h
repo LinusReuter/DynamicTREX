@@ -275,6 +275,15 @@ public:
                         numberOfStopsInRoute(route)]);
   }
 
+  inline const StopEvent *
+  eventOfStopIndexOnLastTrip(const RouteId route,
+                             const StopIndex index) const noexcept {
+    AssertMsg(isRoute(route),
+              "The id " << route << " does not represent a route!");
+    return &(stopEvents[firstStopEventOfRoute[route + 1] -
+                        numberOfStopsInRoute(route) + index]);
+  }
+
   inline const StopEvent *tripOfRoute(const RouteId route,
                                       const size_t tripNum) const noexcept {
     AssertMsg(isRoute(route),
@@ -1518,6 +1527,28 @@ public:
   }
 
 public:
+  inline size_t memoryConsumption() const noexcept {
+    size_t bytes = 0;
+
+    bytes += firstRouteSegmentOfStop.capacity() * sizeof(size_t);
+    bytes += firstStopIdOfRoute.capacity() * sizeof(size_t);
+    bytes += firstStopEventOfRoute.capacity() * sizeof(size_t);
+    bytes += routeSegments.capacity() * sizeof(RouteSegment);
+    bytes += stopIds.capacity() * sizeof(StopId);
+    bytes += stopEvents.capacity() * sizeof(StopEvent);
+    bytes += stopData.capacity() * sizeof(Stop);
+    bytes += routeData.capacity() * sizeof(Route);
+
+    bytes += transferGraph.memoryConsumption();
+
+    // bools are part of the object's inline storage, not heap allocations,
+    // but included for completeness
+    bytes += sizeof(implicitDepartureBufferTimes);
+    bytes += sizeof(implicitArrivalBufferTimes);
+
+    return bytes;
+  }
+
   std::vector<size_t> firstRouteSegmentOfStop;
 
   std::vector<size_t> firstStopIdOfRoute;
