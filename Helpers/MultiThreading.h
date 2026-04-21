@@ -5,12 +5,6 @@
 #include <sched.h>
 #endif
 
-#ifdef __APPLE__
-#include <pthread.h>
-#include <mach/thread_act.h>
-#include <mach/thread_policy.h>
-#endif
-
 #include <omp.h>
 
 #include <cmath>
@@ -31,16 +25,7 @@ inline void pinThreadToCoreId(const size_t coreId) noexcept {
   CPU_SET(coreId, &mask);
   sched_setaffinity(0, sizeof(mask), &mask);
 }
-#elif defined(__APPLE__)
-inline void pinThreadToCoreId(const size_t coreId) noexcept {
-  thread_affinity_policy_data_t policy;
-  policy.affinity_tag = static_cast<integer_t>(coreId + 1);
-  thread_policy_set(pthread_mach_thread_np(pthread_self()),
-                    THREAD_AFFINITY_POLICY,
-                    reinterpret_cast<thread_policy_t>(&policy),
-                    THREAD_AFFINITY_POLICY_COUNT);
-}
-#else
+#else //No thread pinning on non linux systems
 inline void pinThreadToCoreId([[maybe_unused]] const size_t coreId) noexcept {}
 #endif
 
