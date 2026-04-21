@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../TripBased/Data.h"
 #include "../../Algorithms/TripBased/Query/Types.h"
 #include "../../Algorithms/UnionFind.h"
 #include "../../Helpers/Types.h"
@@ -31,7 +32,57 @@ public:
      * Extracts all necessary data so RAPTOR::Data is no longer needed as a member.
      * Mints initial StopEventIds sequentially.
      */
-    explicit Data(const RAPTOR::Data& raptorData);
+    explicit inline Data(const RAPTOR::Data& raptorData) {
+        transferGraph_ = raptorData.transferGraph;
+        numberOfStops_ = raptorData.numberOfStops();
+
+        RAPTOR::Data& rd = const_cast<RAPTOR::Data&>(raptorData);
+
+        size_t numRoutes = rd.numberOfRoutes();
+        routes_.resize(numRoutes);
+
+        for (size_t r = 0; r < numRoutes; r++) {
+            RouteId routeId(r);
+            DynamicRoute& dynRoute = routes_[r];
+            dynRoute.routeId = routeId;
+
+            auto stopsOfRoute = rd.stopsOfRoute(routeId);
+            for (auto stop : stopsOfRoute) {
+                dynRoute.stopSequence.push_back(stop);
+            }
+
+            size_t numTrips = rd.numberOfTripsInRoute(routeId);
+            dynRoute.trips.resize(numTrips);
+
+            auto stopEvents = rd.stopEventsOfRoute(routeId);
+            size_t numStops = stopsOfRoute.size();
+
+            for (size_t tripIdx = 0; tripIdx < numTrips; tripIdx++) {
+                DynamicTrip& dynTrip = dynRoute.trips[tripIdx];
+                dynTrip.isActive = true;
+                dynTrip.stopEvents.resize(numStops);
+
+                StopEventId firstEventId(nextStopEventId_);
+                firstEventToTripLocation_[firstEventId] = {routeId, tripIdx};
+
+                for (size_t stopIdx = 0; stopIdx < numStops; stopIdx++) {
+                    const RAPTOR::StopEvent& raptorEvent = stopEvents[tripIdx * numStops + stopIdx];
+                    DynamicStopEvent& dynEvent = dynTrip.stopEvents[stopIdx];
+                    dynEvent.id = StopEventId(nextStopEventId_);
+                    dynEvent.stop = stopsOfRoute[stopIdx];
+                    dynEvent.arrivalTime = raptorEvent.arrivalTime;
+                    dynEvent.departureTime = raptorEvent.departureTime;
+                    dynEvent.isSkipped = false;
+
+                    eventToRoute_.push_back(routeId);
+                    eventToFirstEvent_.push_back(firstEventId);
+                    eventToStopIndex_.push_back(stopIdx);
+
+                    nextStopEventId_++;
+                }
+            }
+        }
+    }
 
     // --- Dynamic Updates ---
     /**
@@ -62,18 +113,32 @@ public:
     TripBased::QueryData exportQueryData() const;
 
     // --- Basic Getters ---
-    std::size_t numberOfStops() const;
-    std::size_t numberOfRoutes() const;
-    std::size_t numberOfActiveTrips() const;
-    std::size_t numberOfMintedStopEvents() const; // Represents the ID space size
+    inline std::size_t numberOfStops() const { return numberOfStops_; }
+    inline std::size_t numberOfRoutes() const { return routes_.size(); }
+    inline std::size_t numberOfActiveTrips() const {
+        std::size_t count = 0;
+        for (const auto& route : routes_) {
+            for (const auto& trip : route.trips) {
+                if (trip.isActive) count++;
+            }
+        }
+        return count;
+    }
+    inline std::size_t numberOfMintedStopEvents() const { return static_cast<std::size_t>(nextStopEventId_); }
 
-    const DynamicRoute& getRoute(RouteId routeId) const;
+    inline const DynamicRoute& getRoute(RouteId routeId) const { return routes_[routeId]; }
 
     // --- O(1) Resolution Helpers for Transfer Update ---
-    RouteId getRouteOfEvent(StopEventId eventId) const;
-    StopEventId getFirstEventOfEvent(StopEventId eventId) const;
-    size_t getStopIndexOfEvent(StopEventId eventId) const;
-    const DynamicTrip* getTripByFirstEvent(StopEventId firstEventId) const;
+    inline RouteId getRouteOfEvent(StopEventId eventId) const { return eventToRoute_[eventId]; }
+    inline StopEventId getFirstEventOfEvent(StopEventId eventId) const { return eventToFirstEvent_[eventId]; }
+    inline size_t getStopIndexOfEvent(StopEventId eventId) const { return eventToStopIndex_[eventId]; }
+    inline const DynamicTrip* getTripByFirstEvent(StopEventId firstEventId) const {
+        auto it = firstEventToTripLocation_.find(firstEventId);
+        if (it != firstEventToTripLocation_.end()) {
+            return &routes_[it->second.first].trips[it->second.second];
+        }
+        return nullptr;
+    }
 
     // --- Postprocessing & Partitioning ---
     void createCompactLayoutGraph();
@@ -81,11 +146,11 @@ public:
     void readPartitionFile(const std::string& fileName);
 
     inline void serialize(const std::string& fileName) const noexcept {
-        IO::serialize(fileName, routes_, nextStopEventId_, firstEventToTripLocation_, eventToRoute_, eventToFirstEvent_, eventToStopIndex_, transferGraph_, firstRouteSegmentOfStop_, routeSegments_, cellIds_, unionFind_, layoutGraph_);
+        IO::serialize(fileName, routes_, nextStopEventId_, firstEventToTripLocation_, eventToRoute_, eventToFirstEvent_, eventToStopIndex_, transferGraph_, numberOfStops_, cellIds_, unionFind_, layoutGraph_);
     }
 
     inline void deserialize(const std::string& fileName) noexcept {
-        IO::deserialize(fileName, routes_, nextStopEventId_, firstEventToTripLocation_, eventToRoute_, eventToFirstEvent_, eventToStopIndex_, transferGraph_, firstRouteSegmentOfStop_, routeSegments_, cellIds_, unionFind_, layoutGraph_);
+        IO::deserialize(fileName, routes_, nextStopEventId_, firstEventToTripLocation_, eventToRoute_, eventToFirstEvent_, eventToStopIndex_, transferGraph_, numberOfStops_, cellIds_, unionFind_, layoutGraph_);
     }
 
     void printInfo() const {
@@ -103,7 +168,7 @@ private:
     std::vector<DynamicRoute> routes_;
 
     // Stable ID generator for StopEvents. Never decreases.
-    StopEventId nextStopEventId_ = 0;
+    StopEventId nextStopEventId_ = StopEventId(0);
 
     // Fast lookup to find the RouteId and Trip index from a first StopEventId.
     // Useful for applying updates to the correct DynamicTrip.
@@ -116,8 +181,7 @@ private:
 
     // Static topological data extracted from RAPTOR (never mutates in real-time)
     TransferGraph transferGraph_;
-    std::vector<size_t> firstRouteSegmentOfStop_;
-    std::vector<RAPTOR::RouteSegment> routeSegments_;
+    std::size_t numberOfStops_ = 0;
 
     // Partitioning and Layout Graph
     std::vector<uint16_t> cellIds_;

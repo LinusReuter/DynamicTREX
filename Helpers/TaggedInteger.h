@@ -183,3 +183,12 @@ private:
 template <int TAG, typename DEPENDENCE>
 using DependentTaggedInteger =
     TaggedInteger<TAG, typename DEPENDENCE::ValueType, DEPENDENCE::InvalidValue, DEPENDENCE::DefaultValue, DEPENDENCE>;
+
+namespace std {
+    template <int TAG, typename VALUE_TYPE, VALUE_TYPE INVALID, VALUE_TYPE DEFAULT, typename... ADDITIONAL_CASTS>
+    struct hash<TaggedInteger<TAG, VALUE_TYPE, INVALID, DEFAULT, ADDITIONAL_CASTS...>> {
+        size_t operator()(const TaggedInteger<TAG, VALUE_TYPE, INVALID, DEFAULT, ADDITIONAL_CASTS...>& t) const {
+            return hash<VALUE_TYPE>()(t.value());
+        }
+    };
+}
