@@ -45,12 +45,6 @@ int main(int argc, char** argv) {
     new IntermediateToTD(shell);
     new IntermediateToTE(shell);
 
-    // Multimodal / mode-aware builders (from dynamic timetable branch)
-    new BuildMultimodalRAPTORData(shell);
-    new AddModeToMultimodalRAPTORData(shell);
-    new BuildMultimodalTripBasedData(shell);
-    new AddModeToMultimodalTripBasedData(shell);
-
     new LoadDimacsGraph(shell);
     new DuplicateTrips(shell);
     new AddGraph(shell);
