@@ -102,7 +102,7 @@ PGO_USE = -fprofile-use=$(PGO_DIR) -fprofile-correction
 # -----------------------------
 # Default targets
 # -----------------------------
-all: TREXRelease NetworkRelease
+all: TREXRelease NetworkRelease DynamicRelease
 
 # -----------------------------
 # Network
@@ -123,6 +123,17 @@ TREXDebug:
 TREXRelease:
 	$(CC) $(FLAGS) $(OPTIMIZATION) $(RELEASE) \
 	      -o TREX TREX.cpp -ltbb -latomic $(PREFETCH) -g
+
+# -----------------------------
+# Dynamic
+# -----------------------------
+DynamicDebug:
+	$(CC) $(FLAGS) $(OPTIMIZATION) $(DEBUG) \
+	      -o Dynamic Dynamic.cpp -ltbb -latomic $(PREFETCH)
+
+DynamicRelease:
+	$(CC) $(FLAGS) $(OPTIMIZATION) $(RELEASE) \
+	      -o Dynamic Dynamic.cpp -ltbb -latomic $(PREFETCH) -g
 
 # -----------------------------
 # TREX PGO
@@ -146,6 +157,5 @@ TREXPGO_USE:
 # Cleanup
 # -----------------------------
 clean:
-	rm -f TREX TREX_pgo_gen Network
+	rm -f TREX TREX_pgo_gen Network Dynamic
 	rm -rf $(PGO_DIR)
-
