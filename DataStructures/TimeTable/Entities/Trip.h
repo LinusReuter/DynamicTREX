@@ -87,7 +87,7 @@ public:
   bool isCancelled() const { return status == TripStatus::CANCELLED; }
   bool isAdded() const { return status == TripStatus::ADDED; }
 
-  const std::size_t numberOfEvents() const noexcept {
+  std::size_t numberOfEvents() const noexcept {
     return stopEvents.size();
   }
 

@@ -141,9 +141,9 @@ public:
     }
 
     // --- Postprocessing & Partitioning ---
-    void createCompactLayoutGraph();
-    void applyGlobalIDs(const std::vector<uint64_t>& globalIds) noexcept;
-    void readPartitionFile(const std::string& fileName);
+    inline void createCompactLayoutGraph() {}
+    inline void applyGlobalIDs([[maybe_unused]] const std::vector<uint64_t>& globalIds) noexcept {}
+    inline void readPartitionFile([[maybe_unused]] const std::string& fileName) {}
 
     inline void serialize(const std::string& fileName) const noexcept {
         IO::serialize(fileName, routes_, nextStopEventId_, firstEventToTripLocation_, eventToRoute_, eventToFirstEvent_, eventToStopIndex_, transferGraph_, numberOfStops_, cellIds_, unionFind_, layoutGraph_);
