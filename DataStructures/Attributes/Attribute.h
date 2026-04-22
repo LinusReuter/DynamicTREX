@@ -135,7 +135,7 @@ inline constexpr bool ContainsAttribute() {
 namespace Implementation {
 template <AttributeNameType ATTRIBUTE_NAME, typename ATTRIBUTE_LIST>
 struct FindAttributeList {
-    static_assert(ATTRIBUTE_NAME != ATTRIBUTE_NAME,
+    static_assert(sizeof(ATTRIBUTE_LIST*) == 0,
                   "ATTRIBUTE_LIST does not contain an attribute with "
                   "ATTRIBUTE_NAME as name!");
 };
@@ -153,7 +153,7 @@ using FindAttributeList = typename Implementation::FindAttributeList<ATTRIBUTE_N
 namespace Implementation {
 template <AttributeNameType ATTRIBUTE_NAME, typename ATTRIBUTE_LIST>
 struct FindAttributeType {
-    static_assert(ATTRIBUTE_NAME != ATTRIBUTE_NAME,
+    static_assert(sizeof(ATTRIBUTE_LIST*) == 0,
                   "ATTRIBUTE_LIST does not contain an attribute with "
                   "ATTRIBUTE_NAME as name!");
 };
