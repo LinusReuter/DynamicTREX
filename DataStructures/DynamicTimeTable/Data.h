@@ -109,6 +109,7 @@ public:
      * expected by TripBased::QueryData.
      * TODO: Can Cancelled/Skipped StopEventIds remain as holes to preserve
      * transfer graph stability or is a mapping needed (query and cell logic!!!)
+     * If so we can store some if not most data directly in the format to export
      */
     TripBased::QueryData exportQueryData() const;
 
