@@ -1,10 +1,8 @@
 #pragma once
 
-#include "../../Helpers/Types.h"
-
 #include <vector>
-#include <optional>
-#include <cstdint>
+
+#include "../../Helpers/Types.h"
 
 namespace DynamicTimeTable {
 
@@ -14,64 +12,72 @@ namespace DynamicTimeTable {
 
 struct StopModification {
     StopIndex stopIndex;
-    uint32_t newArrivalTime;
-    uint32_t newDepartureTime;
-    bool isSkipped = false;
+    Time newArrivalTime = noTime;  // noValue if not affected
+    Time newDepartureTime = noTime;
+    bool isSkipped = false;  // If true, triggers a route extraction/re-insertion
 };
 
 struct AddedTripInfo {
-    std::optional<RouteId> preferredRouteId;
+    PersistentRouteId preferredRouteId = noPersistentRouteId;
     std::vector<StopId> stopSequence;
-    std::vector<uint32_t> arrivalTimes;
-    std::vector<uint32_t> departureTimes;
+    std::vector<Time> arrivalTimes;
+    std::vector<Time> departureTimes;
 };
 
 struct PendingUpdates {
-    // Identify trips to cancel or modify by their first StopEventId
-    std::vector<StopEventId> cancellations;
-    std::vector<std::pair<StopEventId, std::vector<StopModification>>> modifications;
+    std::vector<PersistentTripId> cancellations;
+    std::vector<std::pair<PersistentTripId, std::vector<StopModification>>> modifications;
     std::vector<AddedTripInfo> additions;
 
-    bool hasUpdates() const {
-        return !cancellations.empty() || !modifications.empty() || !additions.empty();
-    }
+    bool hasUpdates() const { return !cancellations.empty() || !modifications.empty() || !additions.empty(); }
 };
 
 // ---------------------------------------------------------
 // Change Tracking (Consumed by the Transfer Update Stage)
 // ---------------------------------------------------------
 
+struct CancelledTripInfo {
+    PersistentTripId tripId;
+    PersistentRouteId oldRouteId;  // Essential for transfer phase redirection/cleanup
+};
+
 struct ChangeSummary {
-    // PHASE 0: Complete Line Removals
+    // PHASE 0: Complete Route Removals
     // Transfer stage deletes all edges pointing to or from these Routes.
-    std::vector<RouteId> removedRoutes;
+    std::vector<PersistentRouteId> removedRoutes;
 
-    // PHASE 1: Trip Cancellations
-    // Transfer stage attempts to redirect edges pointing to these trips.
-    // (Identified by their first StopEventId to locate them in the TransferStore)
-    std::vector<StopEventId> cancelledTrips;
+    // PHASE 1: Trip Cancellations & Extractions
+    // Transfer stage treats these as removed from their old route context.
+    // (This includes trips that were permanently cancelled AND trips that were
+    // extracted due to a skipped stop or FIFO violation).
+    std::vector<CancelledTripInfo> cancelledTrips;
 
-    // PHASE 2 & 3: Discovery Triggers
-    // Trips that were added, or had departure/arrival delays.
-    // Transfer stage runs Outgoing/Incoming discovery on their affected stops.
-    std::vector<StopEventId> modifiedOrAddedTrips;
+    // PHASE 2 & 3: Discovery Triggers - New Additions
+    // Trips that were genuinely added, or trips that were re-inserted into a new
+    // route after a FIFO violation / skipped stop extraction.
+    std::vector<PersistentTripId> addedTrips;
+
+    // Discovery Triggers - In-Place Modifications
+    // Events that were delayed/modified but the trip stayed in its original route.
+    std::vector<PersistentStopEventId> modifiedEvents;
 
     // MINIMIZATION: Upstream Impact
     // If a trip's arrival times were delayed, transfers pointing INTO it
     // are now worse. The Transfer Stage must look up incoming edges to this trip,
     // and flag their SOURCE trips for re-minimization.
-    std::vector<StopEventId> tripsWithDelayedArrivals;
+    std::vector<PersistentTripId> tripsWithDelayedArrivals;
 
     void clear() {
         removedRoutes.clear();
         cancelledTrips.clear();
-        modifiedOrAddedTrips.clear();
+        addedTrips.clear();
+        modifiedEvents.clear();
         tripsWithDelayedArrivals.clear();
     }
 
     bool hasStructuralChanges() const {
-        return !removedRoutes.empty() || !cancelledTrips.empty() ||
-               !modifiedOrAddedTrips.empty() || !tripsWithDelayedArrivals.empty();
+        return !removedRoutes.empty() || !cancelledTrips.empty() || !addedTrips.empty() || !modifiedEvents.empty() ||
+               !tripsWithDelayedArrivals.empty();
     }
 };
 
@@ -94,4 +100,4 @@ struct UpdateStatistics {
     }
 };
 
-} // namespace DynamicTimeTable
+}  // namespace DynamicTimeTable

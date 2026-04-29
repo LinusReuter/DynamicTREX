@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <vector>
@@ -45,6 +46,18 @@ constexpr PackedTransfer noPackedTransfer(PackedTransfer::InvalidValue);
 
 using Time = TaggedInteger<11, u_int32_t, -u_int32_t(1)>;
 constexpr Time noTime(Time::InvalidValue);
+
+// ---------------------------------------------------------
+// Persistent (Stable) Identity Types for realtime updates
+// ---------------------------------------------------------
+using PersistentStopEventId = TaggedInteger<12, u_int32_t, -u_int32_t(1)>;
+constexpr PersistentStopEventId noPersistentStopEventId(PersistentStopEventId::InvalidValue);
+
+using PersistentTripId = TaggedInteger<13, u_int32_t, -u_int32_t(1)>;
+constexpr PersistentTripId noPersistentTripId(PersistentTripId::InvalidValue);
+
+using PersistentRouteId = TaggedInteger<14, u_int32_t, -u_int32_t(1)>;
+constexpr PersistentRouteId noPersistentRouteId(PersistentRouteId::InvalidValue);
 
 inline constexpr int intMax = std::numeric_limits<int>::max();
 inline constexpr double doubleMax = std::numeric_limits<double>::max();

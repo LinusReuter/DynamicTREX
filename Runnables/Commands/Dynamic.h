@@ -3,6 +3,7 @@
 #include <string>
 
 #include "../../DataStructures/RAPTOR/Data.h"
+#include "../../DataStructures/TripBased/Data.h"
 #include "../../DataStructures/DynamicTimeTable/Data.h"
 #include "../../Shell/Shell.h"
 
