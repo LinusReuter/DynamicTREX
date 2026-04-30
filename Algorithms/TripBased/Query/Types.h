@@ -160,8 +160,44 @@ struct EventLookup {
     EventLookup(const StopId stop = noStop, uint32_t arrTime = 0) : stop(stop), arrTime(arrTime) {}
 };
 
+struct QueryDataBuilder {
+    TransferGraph transferGraph;
+    TransferGraph reverseTransferGraph;
+
+    std::vector<EventLookup> eventLookup;
+    std::vector<std::uint32_t> eventArrTimes;
+    std::vector<std::uint32_t> eventDepTimes;
+
+    std::vector<TripId> tripOfStopEvent;
+    std::vector<RouteId> routeOfTrip;
+    std::vector<StopEventId> firstStopEventOfTrip;
+    std::vector<TripId> firstTripOfRoute;
+
+    std::vector<size_t> firstRouteSegmentOfStop;
+    std::vector<RAPTOR::RouteSegment> routeSegments;
+    std::vector<size_t> firstStopIdOfRoute;
+    std::vector<StopId> routeStopSequences;
+    std::vector<RouteLabel> routeLabels;
+};
+
 class QueryData {
 public:
+    QueryData(QueryDataBuilder&& builder)
+        : transferGraph(std::move(builder.transferGraph)),
+          reverseTransferGraph(std::move(builder.reverseTransferGraph)),
+          eventLookup(std::move(builder.eventLookup)),
+          eventArrTimes(std::move(builder.eventArrTimes)),
+          eventDepTimes(std::move(builder.eventDepTimes)),
+          tripOfStopEvent(std::move(builder.tripOfStopEvent)),
+          routeOfTrip(std::move(builder.routeOfTrip)),
+          firstStopEventOfTrip(std::move(builder.firstStopEventOfTrip)),
+          firstTripOfRoute(std::move(builder.firstTripOfRoute)),
+          firstRouteSegmentOfStop(std::move(builder.firstRouteSegmentOfStop)),
+          routeSegments(std::move(builder.routeSegments)),
+          firstStopIdOfRoute(std::move(builder.firstStopIdOfRoute)),
+          routeStopSequences(std::move(builder.routeStopSequences)),
+          routeLabels(std::move(builder.routeLabels)) {}
+
     QueryData(const Data& data)
         : transferGraph(data.raptorData.transferGraph),
           reverseTransferGraph(data.raptorData.transferGraph),

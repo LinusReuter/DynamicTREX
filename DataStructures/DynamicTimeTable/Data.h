@@ -16,6 +16,10 @@
 #include "Entities/PersistentTrip.h"
 #include "UpdateTypes.h"
 
+namespace DynamicTB {
+    struct DynamicQueryData;
+}
+
 namespace DynamicTimeTable {
 
 /**
@@ -26,6 +30,8 @@ namespace DynamicTimeTable {
  * Routes have an immutable stop sequence; if a trip's effective sequence changes, it migrates.
  */
 class Data {
+    friend struct ::DynamicTB::DynamicQueryData;
+
 public:
     Data() = default;
 
@@ -147,9 +153,6 @@ public:
     const ChangeSummary& getLatestChanges() const { return latestChanges_; }
 
     void clearChangeSummary() { latestChanges_.clear(); }
-
-    // --- Export ---
-    // #TODO
 
     // --- Basic Getters ---
 
