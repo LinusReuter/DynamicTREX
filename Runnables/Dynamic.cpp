@@ -14,6 +14,7 @@ int main(int argc, char** argv) {
 
     new RAPTORToDynamic(shell);
     new LoadAndApplyDynamicPartition(shell);
+    new BuildDynamicQueryData(shell);
 
     shell.run();
     return 0;

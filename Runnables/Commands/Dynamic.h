@@ -1,9 +1,11 @@
 #pragma once
 
+#include <chrono>
 #include <string>
 
 #include "../../DataStructures/RAPTOR/Data.h"
 #include "../../DataStructures/TripBased/Data.h"
+#include "../../Algorithms/DynamicTB/Types.h"
 #include "../../DataStructures/DynamicTimeTable/Data.h"
 #include "../../Shell/Shell.h"
 
@@ -53,5 +55,35 @@ public:
         dynamicTimeTable.readPartitionFile(partitionFile);
 
         dynamicTimeTable.serialize(dynamicFile);
+    }
+};
+
+class BuildDynamicQueryData : public ParameterizedCommand {
+public:
+    BuildDynamicQueryData(BasicShell &shell)
+        : ParameterizedCommand(
+              shell, "buildDynamicQueryData",
+              "Loads a DynamicTimeTable and builds the QueryData structure to test export compilation.") {
+        addParameter("Input binary (DynamicTimeTable Data)");
+    }
+
+    virtual void execute() noexcept override {
+        const std::string dynamicFile = getParameter("Input binary (DynamicTimeTable Data)");
+
+        std::cout << "Loading DynamicTimeTable..." << std::endl;
+        DynamicTimeTable::Data dynamicTimeTable(dynamicFile);
+        dynamicTimeTable.printInfo();
+
+        std::cout << "Building DynamicQueryData..." << std::endl;
+        auto start = std::chrono::high_resolution_clock::now();
+        auto queryData = DynamicTB::DynamicQueryData::buildFromDynamic(dynamicTimeTable);
+        auto stop = std::chrono::high_resolution_clock::now();
+        auto duration =  std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+        std::cout << "Successfully built DynamicQueryData in " << duration << std::endl;
+
+        std::cout << "  Exported Routes: " << queryData.queryData.routeLabels.size() << std::endl;
+        std::cout << "  Exported Trips: " << queryData.queryData.firstStopEventOfTrip.size() << std::endl;
+        std::cout << "  Exported Events: " << queryData.queryData.eventLookup.size() << std::endl;
+        std::cout << "  Exported Route Segments: " << queryData.queryData.routeSegments.size() << std::endl;
     }
 };

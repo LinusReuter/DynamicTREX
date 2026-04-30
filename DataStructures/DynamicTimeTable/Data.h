@@ -35,6 +35,8 @@ class Data {
 public:
     Data() = default;
 
+    explicit Data(const std::string& fileName) { deserialize(fileName); }
+
     explicit Data(const RAPTOR::Data& raptorData) { importFromRaptor(raptorData); }
 
     void importFromRaptor(const RAPTOR::Data& raptorData) {
