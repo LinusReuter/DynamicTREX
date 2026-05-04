@@ -5,7 +5,7 @@
 
 #include "../../DataStructures/RAPTOR/Data.h"
 #include "../../DataStructures/TripBased/Data.h"
-#include "../../Algorithms/DynamicTB/Types.h"
+#include "../../Algorithms/DynamicTimeTable/BuildQueryData.h"
 #include "../../DataStructures/DynamicTimeTable/Data.h"
 #include "../../Shell/Shell.h"
 
@@ -76,7 +76,7 @@ public:
 
         std::cout << "Building DynamicQueryData..." << std::endl;
         auto start = std::chrono::high_resolution_clock::now();
-        auto queryData = DynamicTB::DynamicQueryData::buildFromDynamic(dynamicTimeTable);
+        auto queryData = DynamicTimeTable::Algo::DynamicQueryData::buildFromDynamic(dynamicTimeTable);
         auto stop = std::chrono::high_resolution_clock::now();
         auto duration =  std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
         std::cout << "Successfully built DynamicQueryData in " << duration << std::endl;

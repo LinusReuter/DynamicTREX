@@ -4,7 +4,8 @@
 #include "../../DataStructures/DynamicTimeTable/Data.h"
 #include "../../Helpers/Types.h"
 
-namespace DynamicTB {
+namespace DynamicTimeTable {
+namespace Algo {
 
 struct DynamicQueryData {
     TripBased::QueryData queryData;
@@ -20,6 +21,10 @@ struct DynamicQueryData {
     std::vector<StopEventId> persistentToFlatEvent;
 
     static DynamicQueryData buildFromDynamic(const DynamicTimeTable::Data& data) {
+        const auto& routes = data.routes();
+        const auto& trips = data.trips();
+        const auto& events = data.events();
+
         // 1. Prefix-Sum Offset Pass (Sequential, enables parallelization later)
         struct RouteOffsets {
             RouteId flatRouteId;
@@ -27,17 +32,17 @@ struct DynamicQueryData {
             StopEventId flatEventId;
             size_t flatStopSeqOffset;
         };
-        std::vector<RouteOffsets> routeOffsets(data.routes_.size());
+        std::vector<RouteOffsets> routeOffsets(routes.size());
 
         size_t activeRouteCount = 0;
         size_t activeTripCount = 0;
         size_t activeEventCount = 0;
         size_t activeStopSequenceLength = 0;
 
-        for (size_t i = 0; i < data.routes_.size(); ++i) {
+        for (size_t i = 0; i < routes.size(); ++i) {
             routeOffsets[i] = { RouteId(activeRouteCount), TripId(activeTripCount), StopEventId(activeEventCount), activeStopSequenceLength };
 
-            const auto& pRoute = data.routes_[i];
+            const auto& pRoute = routes[i];
             if (pRoute.trips.empty()) continue;
 
             activeRouteCount++;
@@ -49,8 +54,8 @@ struct DynamicQueryData {
         // 2. Allocate Builder and Translation Layers
         TripBased::QueryDataBuilder builder;
 
-        builder.transferGraph = data.transferGraph_;
-        builder.reverseTransferGraph = data.transferGraph_;
+        builder.transferGraph = data.transferGraph();
+        builder.reverseTransferGraph = data.transferGraph();
         builder.reverseTransferGraph.revert();
 
         builder.eventLookup.resize(activeEventCount);
@@ -70,14 +75,14 @@ struct DynamicQueryData {
         std::vector<PersistentTripId> flatToPersistentTrip(activeTripCount);
         std::vector<PersistentStopEventId> flatToPersistentEvent(activeEventCount);
 
-        std::vector<RouteId> persistentToFlatRoute(data.routes_.size(), (RouteId)-1);
-        std::vector<TripId> persistentToFlatTrip(data.trips_.size(), (TripId)-1);
-        std::vector<StopEventId> persistentToFlatEvent(data.events_.size(), (StopEventId)-1);
+        std::vector<RouteId> persistentToFlatRoute(routes.size(), (RouteId)-1);
+        std::vector<TripId> persistentToFlatTrip(trips.size(), (TripId)-1);
+        std::vector<StopEventId> persistentToFlatEvent(events.size(), (StopEventId)-1);
 
         // 3. Topology & Translation Mapping (Parallelized)
 #pragma omp parallel for
-        for (size_t rIdx = 0; rIdx < data.routes_.size(); ++rIdx) {
-            const auto& pRoute = data.routes_[rIdx];
+        for (size_t rIdx = 0; rIdx < routes.size(); ++rIdx) {
+            const auto& pRoute = routes[rIdx];
             if (pRoute.trips.empty()) continue;
 
             RouteId currentRoute = routeOffsets[rIdx].flatRouteId;
@@ -108,11 +113,11 @@ struct DynamicQueryData {
                 builder.firstStopEventOfTrip[currentTrip] = currentEvent;
                 builder.routeOfTrip[currentTrip] = currentRoute;
 
-                const auto& pTrip = data.trips_[pTripId];
+                const auto& pTrip = trips[pTripId];
                 size_t stopIdx = 0;
                 for (size_t i = 0; i < pTrip.numberOfEvents; ++i) {
                     const auto eventId = PersistentStopEventId(pTrip.firstEvent + i);
-                    const auto& pEvent = data.events_[eventId];
+                    const auto& pEvent = events[eventId];
 
                     if (pEvent.isSkipped) continue; // Skipped event
 
@@ -142,7 +147,7 @@ struct DynamicQueryData {
         builder.firstStopIdOfRoute[activeRouteCount] = activeStopSequenceLength;
 
         // 4. Rebuild routeSegments
-        const size_t numStops = data.numberOfStops_;
+        const size_t numStops = data.numberOfStops();
         std::vector<size_t> segmentsPerStop(numStops, 0);
 
         for (RouteId r = RouteId(0); r < RouteId(activeRouteCount); ++r) {
@@ -190,4 +195,5 @@ struct DynamicQueryData {
     }
 };
 
-} // namespace DynamicTB
+} // namespace Algo
+} // namespace DynamicTimeTable
