@@ -115,9 +115,8 @@ private:
                 // We expect the upstream stage to have sanitized the data, but we assert just in case.
                 AssertMsg(e.arrivalTime <= e.departureTime, "Logically invalid modification: arrival > departure");
 
-                // #TODO currently only allows cancellation not reactivation of events
-                if (m.isSkipped) {
-                    e.isSkipped = true;
+                if (m.isSkipped != e.isSkipped) {
+                    e.isSkipped = m.isSkipped;
                     structural = true;
                 }
 

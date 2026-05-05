@@ -26,7 +26,7 @@ struct AddedTripInfo {
 
 struct PendingUpdates {
     std::vector<PersistentTripId> cancellations;
-    std::vector<std::pair<PersistentTripId, std::vector<StopModification>>> modifications;
+    std::vector<std::pair<PersistentTripId, std::vector<StopModification>>> modifications; //Sorted by stop sequence
     std::vector<AddedTripInfo> additions;
 
     bool hasUpdates() const { return !cancellations.empty() || !modifications.empty() || !additions.empty(); }
