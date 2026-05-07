@@ -68,9 +68,36 @@ endif
 NPROC := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
 OPTIMIZATION += -flto=$(NPROC)
 
+# Debug compiler override (sanitizers on macOS need clang's runtime)
+CC_DEBUG = $(CC)
+DEBUG_SANITIZERS = -fsanitize=address,undefined
+LLVM_CLANG =
+ifeq ($(UNAME_S),Darwin)
+  ifneq ($(HOMEBREW_PREFIX),)
+    LLVM_CLANG := $(HOMEBREW_PREFIX)/opt/llvm/bin/clang++
+  endif
+  ifneq ($(LLVM_CLANG),)
+    ifneq ($(wildcard $(LLVM_CLANG)),)
+      CC_DEBUG = $(LLVM_CLANG) -fopenmp
+      FLAGS += -I$(HOMEBREW_PREFIX)/opt/llvm/include -L$(HOMEBREW_PREFIX)/opt/llvm/lib
+      FLAGS += -I$(HOMEBREW_PREFIX)/opt/libomp/include -L$(HOMEBREW_PREFIX)/opt/libomp/lib
+    else
+      DEBUG_SANITIZERS =
+    endif
+  else
+    DEBUG_SANITIZERS =
+  endif
+endif
+
 # Debug and release base options (SIMD-specific flags are appended via SIMD_FLAGS)
 DEBUG = -rdynamic -Werror -Wno-pedantic -Wall -Wextra -Wparentheses \
-        -Wfatal-errors -D_GLIBCXX_DEBUG -g -fno-omit-frame-pointer
+        -Wfatal-errors -D_GLIBCXX_DEBUG -g -fno-omit-frame-pointer $(DEBUG_SANITIZERS)
+
+# LTO flag adjustment for clang-based debug builds
+DEBUG_OPTIMIZATION = $(OPTIMIZATION)
+ifneq (,$(findstring clang,$(CC_DEBUG)))
+  DEBUG_OPTIMIZATION := $(filter-out -flto=%,$(OPTIMIZATION)) -flto
+endif
 
 ifeq ($(IS_ARM),)
 RELEASE_BASE = -ffast-math -ftree-vectorize -Wfatal-errors -DNDEBUG \
@@ -88,6 +115,13 @@ RELEASE = $(RELEASE_BASE) $(SIMD_FLAGS)
 PREFETCH = -DENABLE_PREFETCH -DUSE_SIMD
 ifneq ($(IS_ARM),)
 	PREFETCH += -DUSE_NEON
+endif
+
+# Libraries: default assumes GCC; clang debug builds on macOS usually don't have libatomic
+LIBS_DEFAULT = -ltbb -latomic
+LIBS_DEBUG = $(LIBS_DEFAULT)
+ifneq (,$(findstring clang,$(CC_DEBUG)))
+	LIBS_DEBUG = -ltbb
 endif
 
 # SPARSEHASH = -I ../ExternalLibs/sparsehash/include
@@ -108,7 +142,7 @@ all: TREXRelease NetworkRelease DynamicRelease
 # Network
 # -----------------------------
 NetworkDebug:
-	$(CC) $(FLAGS) $(OPTIMIZATION) $(DEBUG) -o Network Network.cpp
+	$(CC_DEBUG) $(FLAGS) $(DEBUG_OPTIMIZATION) $(DEBUG) -o Network Network.cpp
 
 NetworkRelease:
 	$(CC) $(FLAGS) $(OPTIMIZATION) $(RELEASE) -o Network Network.cpp
@@ -117,8 +151,8 @@ NetworkRelease:
 # TREX
 # -----------------------------
 TREXDebug:
-	$(CC) $(FLAGS) $(OPTIMIZATION) $(DEBUG) \
-	      -o TREX TREX.cpp -ltbb -latomic $(PREFETCH)
+	$(CC_DEBUG) $(FLAGS) $(DEBUG_OPTIMIZATION) $(DEBUG) \
+	      -o TREX TREX.cpp $(LIBS_DEBUG) $(PREFETCH)
 
 TREXRelease:
 	$(CC) $(FLAGS) $(OPTIMIZATION) $(RELEASE) \
@@ -128,8 +162,8 @@ TREXRelease:
 # Dynamic
 # -----------------------------
 DynamicDebug:
-	$(CC) $(FLAGS) $(OPTIMIZATION) $(DEBUG) \
-	      -o Dynamic Dynamic.cpp -ltbb -latomic $(PREFETCH)
+	$(CC_DEBUG) $(FLAGS) $(DEBUG_OPTIMIZATION) $(DEBUG) \
+	      -o Dynamic Dynamic.cpp $(LIBS_DEBUG) $(PREFETCH)
 
 DynamicRelease:
 	$(CC) $(FLAGS) $(OPTIMIZATION) $(RELEASE) \

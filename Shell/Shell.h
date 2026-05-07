@@ -19,12 +19,12 @@ public:
                                "Type ['Quit' | 'quit' | 'Q' | 'q' | 'Exit' | "
                                "'exit'] to terminate the application.") {}
 
-    virtual bool matches(const std::string& s) const noexcept {
+    bool matches(const std::string& s) const noexcept override {
         std::string in = String::toLower(s);
         return (in == "q") || (in == "quit") || (in == "exit");
     }
 
-    virtual void execute() noexcept {
+    void execute() noexcept override {
         shell << newLine;
         shell.setReportCommandTimes(false);
         shell.stop();
@@ -43,12 +43,12 @@ public:
         addParameter("Command", "");
     }
 
-    virtual bool matches(const std::string& s) const noexcept {
+    bool matches(const std::string& s) const noexcept override {
         std::string in = String::toLower(s);
         return (in == "h") || (in == "help");
     }
 
-    virtual void execute() noexcept {
+    void execute() noexcept override {
         const std::string command = getParameter("Command");
         if (command == "") {
             const std::vector<Command*> commands = shell.getCommands();
@@ -66,7 +66,12 @@ public:
         }
     }
 
-    virtual std::vector<std::string> parameterSuggestions() const {
+    using ParameterizedCommand::parameterSuggestions;
+
+    virtual std::vector<std::string> parameterSuggestions(const size_t index) const override {
+        if (index != 0) {
+            return {};
+        }
         std::vector<std::string> suggestions;
         for (Command* command : shell.getCommands()) {
             suggestions.push_back(command->name());
@@ -79,14 +84,14 @@ class Dir : public ParameterizedCommand {
 public:
     Dir(BasicShell& shell) : ParameterizedCommand(shell, "dir", "Displays the current working directory.") {}
 
-    virtual void execute() noexcept { shell << shell.getDir() << newLine; }
+    void execute() noexcept override { shell << shell.getDir() << newLine; }
 };
 
 class Ls : public ParameterizedCommand {
 public:
     Ls(BasicShell& shell) : ParameterizedCommand(shell, "ls", "Displays all files in the current working directory.") {}
 
-    virtual void execute() noexcept {
+    void execute() noexcept override {
         std::string path = shell.getDir();
         shell << shell.getDir() << newLine;
         DIR* dir;
@@ -113,7 +118,7 @@ public:
         addParameter("Directory");
     }
 
-    virtual void execute() noexcept {
+    void execute() noexcept override {
         std::string path = FileSystem::extendPath(shell.getDir(), getParameter("Directory"));
         if (FileSystem::isDirectory(path)) {
             shell.setDir(path);
@@ -134,7 +139,7 @@ public:
         addParameter("Script file");
     }
 
-    virtual void execute() noexcept {
+    void execute() noexcept override {
         const std::string filename = FileSystem::extendPath(shell.getDir(), getParameter("Script file"));
         std::ifstream script(filename);
         AssertMsg(script.is_open(), "cannot open file: " << filename);
@@ -166,7 +171,7 @@ public:
         }
     }
 
-    virtual void execute() noexcept {
+    void execute() noexcept override {
         if (shell.getReportCommandTimes()) {
             shell.setReportCommandTimes(false);
             shell << "Command execution times will no longer be reported!" << newLine;
@@ -193,7 +198,7 @@ public:
         }
     }
 
-    virtual void execute() noexcept {
+    void execute() noexcept override {
         if (shell.getReportParameters()) {
             shell.setReportParameters(false);
             shell << "Parameters and their values will no longer be reported!" << newLine;

@@ -39,12 +39,12 @@ struct WithFileName {
     WithFileName() { std::memset(fileName, 0, MAX_FILE_NAME_LENGTH + 1); }
 
     void setFileName(const char* fileName) {
-// https://stackoverflow.com/a/50198710
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wstringop-truncation"
-        std::strncpy(this->fileName, fileName, MAX_FILE_NAME_LENGTH);
-#pragma GCC diagnostic pop
-        this->fileName[MAX_FILE_NAME_LENGTH] = '\0';
+        if (fileName == nullptr) {
+            this->fileName[0] = '\0';
+            return;
+        }
+        // Use snprintf to avoid -Wstringop-truncation on GCC/Clang and ensure null-termination.
+        std::snprintf(this->fileName, sizeof(this->fileName), "%s", fileName);
     }
 
     char fileName[MAX_FILE_NAME_LENGTH + 1];
@@ -152,8 +152,11 @@ public:
     void setFileName(const std::string& fileName) { setFileName(fileName.c_str()); }
 
     void setFileName(const char* fileName) {
-        strncpy(this->fileName, fileName, Error::MAX_FILE_NAME_LENGTH);
-        this->fileName[Error::MAX_FILE_NAME_LENGTH] = '\0';
+        if (fileName == nullptr) {
+            this->fileName[0] = '\0';
+            return;
+        }
+        std::snprintf(this->fileName, sizeof(this->fileName), "%s", fileName);
     }
 
     const char* getTruncatedFileName() const { return fileName; }
@@ -213,7 +216,10 @@ public:
     }
 
     ~LineReader() {
-        if (bytesRead.valid()) bytesRead.get();
+        if (bytesRead.valid()) {
+            const int readBytes = bytesRead.get();
+            static_cast<void>(readBytes);
+        }
         delete[] buffer;
         std::fclose(file);
     }
@@ -228,8 +234,11 @@ struct WithColumnName {
     WithColumnName() { std::memset(columnName, 0, MAX_COLUMN_NAME_LENGTH + 1); }
 
     void setColumnName(const char* columnName) {
-        std::strncpy(this->columnName, columnName, MAX_COLUMN_NAME_LENGTH);
-        this->columnName[MAX_COLUMN_NAME_LENGTH] = '\0';
+        if (columnName == nullptr) {
+            this->columnName[0] = '\0';
+            return;
+        }
+        std::snprintf(this->columnName, sizeof(this->columnName), "%s", columnName);
     }
 
     char columnName[MAX_COLUMN_NAME_LENGTH + 1];
@@ -239,8 +248,11 @@ struct WithColumnContent {
     WithColumnContent() { std::memset(columnContent, 0, MAX_COLUMN_CONTENT_LENGTH + 1); }
 
     void setColumnContent(const char* columnContent) {
-        std::strncpy(this->columnContent, columnContent, MAX_COLUMN_CONTENT_LENGTH);
-        this->columnContent[MAX_COLUMN_CONTENT_LENGTH] = '\0';
+        if (columnContent == nullptr) {
+            this->columnContent[0] = '\0';
+            return;
+        }
+        std::snprintf(this->columnContent, sizeof(this->columnContent), "%s", columnContent);
     }
 
     char columnContent[MAX_COLUMN_CONTENT_LENGTH + 1];
