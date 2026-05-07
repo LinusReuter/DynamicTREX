@@ -1,11 +1,14 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <string>
 
 #include "../../DataStructures/RAPTOR/Data.h"
 #include "../../DataStructures/TripBased/Data.h"
 #include "../../Algorithms/DynamicTimeTable/BuildQueryData.h"
+#include "../../Algorithms/DynamicTimeTable/Update.h"
+#include "../../Algorithms/DynamicTimeTable/UpdateSimulation.h"
 #include "../../DataStructures/DynamicTimeTable/Data.h"
 #include "../../Shell/Shell.h"
 
@@ -85,5 +88,13 @@ public:
         std::cout << "  Exported Trips: " << queryData.queryData.firstStopEventOfTrip.size() << std::endl;
         std::cout << "  Exported Events: " << queryData.queryData.eventLookup.size() << std::endl;
         std::cout << "  Exported Route Segments: " << queryData.queryData.routeSegments.size() << std::endl;
+        std::cout << "Validating DynamicQueryData..." << std::endl;
+        const auto validation = queryData.validate(dynamicTimeTable);
+        if (!validation.first) {
+            std::cout << "DynamicQueryData validation failed: " << validation.second << std::endl;
+        } else {
+            std::cout << "DynamicQueryData validation OK." << std::endl;
+        }
+
     }
 };
