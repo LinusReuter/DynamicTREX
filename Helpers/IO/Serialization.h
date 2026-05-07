@@ -5,6 +5,8 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -147,6 +149,28 @@ private:
         }
     }
 
+    template <typename K, typename V, typename Hash, typename Eq, typename Alloc>
+    inline void serialize(const std::unordered_map<K, V, Hash, Eq, Alloc>& mapObject) noexcept {
+        checkStream(os);
+        serialize(Meta::type<K>());
+        serialize(Meta::type<V>());
+        serialize(mapObject.size());
+        for (const auto& entry : mapObject) {
+            serialize(entry.first);
+            serialize(entry.second);
+        }
+    }
+
+    template <typename T, typename Hash, typename Eq, typename Alloc>
+    inline void serialize(const std::unordered_set<T, Hash, Eq, Alloc>& setObject) noexcept {
+        checkStream(os);
+        serialize(Meta::type<T>());
+        serialize(setObject.size());
+        for (const auto& value : setObject) {
+            serialize(value);
+        }
+    }
+
     template <typename T, size_t N>
     inline void serialize(const std::array<T, N>& arrayObject) noexcept {
         checkStream(os);
@@ -256,6 +280,49 @@ private:
         } else {
             vectorObject.resize(size);
             is.read(reinterpret_cast<char*>(vectorObject.data()), size * sizeof(T));
+        }
+    }
+
+    template <typename K, typename V, typename Hash, typename Eq, typename Alloc>
+    inline void deserialize(std::unordered_map<K, V, Hash, Eq, Alloc>& mapObject) noexcept {
+        checkStream(is);
+        std::string keyType;
+        std::string valueType;
+        deserialize(keyType);
+        deserialize(valueType);
+        Ensure(keyType == Meta::type<K>() && valueType == Meta::type<V>(),
+               "Trying to deserialize an std::unordered_map<" << Meta::type<K>() << ", " << Meta::type<V>()
+                                                              << "> from a file that contains an std::unordered_map<"
+                                                              << keyType << ", " << valueType << ">!");
+        decltype(mapObject.size()) size = 0;
+        deserialize(size);
+        mapObject.clear();
+        mapObject.reserve(size);
+        for (decltype(size) i = 0; i < size; ++i) {
+            K key;
+            V value;
+            deserialize(key);
+            deserialize(value);
+            mapObject.emplace(std::move(key), std::move(value));
+        }
+    }
+
+    template <typename T, typename Hash, typename Eq, typename Alloc>
+    inline void deserialize(std::unordered_set<T, Hash, Eq, Alloc>& setObject) noexcept {
+        checkStream(is);
+        std::string type;
+        deserialize(type);
+        Ensure(type == Meta::type<T>(), "Trying to deserialize an std::unordered_set<"
+                                            << Meta::type<T>() << "> from a file that contains an std::unordered_set<"
+                                            << type << ">!");
+        decltype(setObject.size()) size = 0;
+        deserialize(size);
+        setObject.clear();
+        setObject.reserve(size);
+        for (decltype(size) i = 0; i < size; ++i) {
+            T value;
+            deserialize(value);
+            setObject.emplace(std::move(value));
         }
     }
 
