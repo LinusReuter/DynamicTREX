@@ -98,3 +98,99 @@ public:
 
     }
 };
+
+
+class SimulateDynamicUpdates : public ParameterizedCommand {
+public:
+    SimulateDynamicUpdates(BasicShell &shell)
+        : ParameterizedCommand(
+              shell, "simulateDynamicUpdates",
+              "Simulates and applies dynamic updates, measuring execution time and printing a summary.") {
+        addParameter("Input binary (DynamicTimeTable Data)");
+        addParameter("Current time (seconds)");
+        addParameter("Random seed", "42");
+        addParameter("Expected cancellations", "0");
+        addParameter("Expected delays", "0");
+        addParameter("Expected skipped trips", "0");
+        addParameter("Cancellation horizon (seconds)", "7200");
+        addParameter("Skip horizon (seconds)", "7200");
+        addParameter("Min delay (seconds)", "60");
+        addParameter("Max delay (seconds)", "600");
+        addParameter("Max skipped stops per trip", "1");
+    }
+
+    virtual void execute() noexcept override {
+        const std::string dynamicFile = getParameter("Input binary (DynamicTimeTable Data)");
+        const int nowSeconds = getParameter<int>("Current time (seconds)");
+
+        DynamicTimeTable::Algo::UpdateSimulationConfig cfg;
+        cfg.seed = static_cast<uint32_t>(getParameter<int>("Random seed"));
+        cfg.cancellations.expectedCount = static_cast<std::size_t>(getParameter<int>("Expected cancellations"));
+        cfg.delays.expectedCount = static_cast<std::size_t>(getParameter<int>("Expected delays"));
+        cfg.skips.expectedCount = static_cast<std::size_t>(getParameter<int>("Expected skipped trips"));
+        cfg.cancellations.horizon = Time(getParameter<int>("Cancellation horizon (seconds)"));
+        cfg.skips.horizon = Time(getParameter<int>("Skip horizon (seconds)"));
+        cfg.delays.minInitialDelay = Time(getParameter<int>("Min delay (seconds)"));
+        cfg.delays.maxInitialDelay = Time(getParameter<int>("Max delay (seconds)"));
+        cfg.skips.maxSkippedStopsPerTrip = getParameter<int>("Max skipped stops per trip");
+
+        std::cout << "Loading DynamicTimeTable..." << std::endl;
+        DynamicTimeTable::Data dynamicTimeTable(dynamicFile);
+        dynamicTimeTable.printInfo();
+
+        DynamicTimeTable::Algo::UpdateSimulator simulator(cfg);
+        DynamicTimeTable::Algo::UpdateSimulationStats simStats{};
+        DynamicTimeTable::PendingUpdates updates = simulator.generate(dynamicTimeTable, Time(nowSeconds), &simStats);
+
+        std::size_t totalStopMods = 0;
+        for (const auto& entry : updates.modifications) {
+            totalStopMods += entry.second.size();
+        }
+
+        std::cout << "Applying updates..." << std::endl;
+        auto start = std::chrono::high_resolution_clock::now();
+        DynamicTimeTable::UpdateStatistics updateStats = DynamicTimeTable::Algo::UpdatePipeline::applyUpdates(dynamicTimeTable, updates);
+        auto stop = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+
+        std::cout << "Building DynamicQueryData for validation..." << std::endl;
+        auto queryData = DynamicTimeTable::Algo::DynamicQueryData::buildFromDynamic(dynamicTimeTable);
+        std::cout << "Validating DynamicQueryData..." << std::endl;
+        const auto validation = queryData.validate(dynamicTimeTable);
+        if (!validation.first) {
+            std::cout << "DynamicQueryData validation failed: " << validation.second << std::endl;
+        } else {
+            std::cout << "DynamicQueryData validation OK." << std::endl;
+        }
+
+        const DynamicTimeTable::ChangeSummary& changes = dynamicTimeTable.getLatestChanges();
+
+        std::cout << "Update pipeline finished in " << duration << std::endl;
+        std::cout << "\nSimulation summary" << std::endl;
+        std::cout << "  Cancelled trips (sim): " << simStats.cancelledTrips << std::endl;
+        std::cout << "  Delayed trips (sim): " << simStats.delayedTrips << std::endl;
+        std::cout << "  Skipped trips (sim): " << simStats.skippedTrips << std::endl;
+        std::cout << "  Modified stops (sim): " << simStats.modifiedStops << std::endl;
+
+        std::cout << "\nPendingUpdates summary" << std::endl;
+        std::cout << "  Cancellations: " << updates.cancellations.size() << std::endl;
+        std::cout << "  Modified trips: " << updates.modifications.size() << std::endl;
+        std::cout << "  Modified stops: " << totalStopMods << std::endl;
+        std::cout << "  Additions: " << updates.additions.size() << std::endl;
+
+        std::cout << "\nUpdateStatistics" << std::endl;
+        std::cout << "  Total updates: " << updateStats.totalUpdates << std::endl;
+        std::cout << "  Successful: " << updateStats.successfulUpdates << std::endl;
+        std::cout << "  Failed: " << updateStats.failedUpdates << std::endl;
+        std::cout << "  Cancellations: " << updateStats.cancellations << std::endl;
+        std::cout << "  Modifications: " << updateStats.modifications << std::endl;
+        std::cout << "  Additions: " << updateStats.additions << std::endl;
+
+        std::cout << "\nChangeSummary" << std::endl;
+        std::cout << "  Removed routes: " << changes.removedRoutes.size() << std::endl;
+        std::cout << "  Cancelled trips: " << changes.cancelledTrips.size() << std::endl;
+        std::cout << "  Added trips: " << changes.addedTrips.size() << std::endl;
+        std::cout << "  Modified events: " << changes.modifiedEvents.size() << std::endl;
+        std::cout << "  Trips with delayed arrivals: " << changes.tripsWithDelayedArrivals.size() << std::endl;
+    }
+};
