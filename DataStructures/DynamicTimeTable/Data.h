@@ -45,6 +45,11 @@ public:
         transferGraph_ = raptorData.transferGraph;
         numberOfStops_ = raptorData.numberOfStops();
 
+        minTransferTimes_.assign(numberOfStops_, 0);
+        for (StopId stop(0); stop < StopId(numberOfStops_); ++stop) {
+            minTransferTimes_[static_cast<size_t>(stop)] = raptorData.stopData[stop].minTransferTime;
+        }
+
         // Some RAPTOR accessors are non-const in this codebase, keep behavior consistent.
         RAPTOR::Data& rd = const_cast<RAPTOR::Data&>(raptorData);
 
@@ -67,8 +72,10 @@ public:
 
         // Ensure implicit buffer times from RAPTOR are applied so they are
         // imported directly as the times of the dynamic timetable
-        rd.useImplicitArrivalBufferTimes();
         rd.useImplicitDepartureBufferTimes();
+
+        implicitDepartureBufferTimes_ = rd.implicitDepartureBufferTimes;
+        implicitArrivalBufferTimes_ = rd.implicitArrivalBufferTimes;
 
         for (std::size_t r = 0; r < numRoutes; r++) {
             const RouteId staticRouteId(r);
@@ -148,6 +155,14 @@ public:
     const std::vector<PersistentStopEvent>& events() const noexcept { return events_; }
     const TransferGraph& transferGraph() const noexcept { return transferGraph_; }
 
+    const std::vector<int>& minTransferTimes() const noexcept { return minTransferTimes_; }
+
+    int minTransferTime(const StopId stop) const noexcept { return minTransferTimes_[stop]; }
+
+    bool usesImplicitDepartureBufferTimes() const noexcept { return implicitDepartureBufferTimes_; }
+
+    bool usesImplicitArrivalBufferTimes() const noexcept { return implicitArrivalBufferTimes_; }
+
     // --- O(1) resolution helpers ---
 
     PersistentRouteId getRouteOfEvent(const PersistentStopEventId eventId) const {
@@ -193,12 +208,14 @@ public:
 
     void serialize(const std::string& fileName) const noexcept {
         IO::serialize(fileName, routes_, trips_, events_, routesBySequenceHash_, eventToTrip_, transferGraph_,
-                      numberOfStops_, cellIds_, unionFind_, layoutGraph_, latestChanges_);
+                      numberOfStops_, cellIds_, unionFind_, layoutGraph_, latestChanges_, minTransferTimes_,
+                      implicitDepartureBufferTimes_, implicitArrivalBufferTimes_);
     }
 
     void deserialize(const std::string& fileName) noexcept {
         IO::deserialize(fileName, routes_, trips_, events_, routesBySequenceHash_, eventToTrip_, transferGraph_,
-                        numberOfStops_, cellIds_, unionFind_, layoutGraph_, latestChanges_);
+                        numberOfStops_, cellIds_, unionFind_, layoutGraph_, latestChanges_, minTransferTimes_,
+                        implicitDepartureBufferTimes_, implicitArrivalBufferTimes_);
     }
 
     void printInfo() const {
@@ -257,6 +274,9 @@ private:
     // Static topology extracted from RAPTOR (currently used internally)
     TransferGraph transferGraph_;
     std::size_t numberOfStops_ = 0;
+    std::vector<int> minTransferTimes_;
+    bool implicitDepartureBufferTimes_ = false;
+    bool implicitArrivalBufferTimes_ = false;
 
     // Partitioning/Layout (kept for compatibility with existing code paths)
     std::vector<uint16_t> cellIds_;
