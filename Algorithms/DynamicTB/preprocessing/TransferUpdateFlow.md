@@ -1,8 +1,5 @@
 # TransferUpdate – Data Flow
 
-Below is the current function set and data flow for updates.
-
-```
 +--------------------------------------------------+
 | buildInitialFullTransfers(queryData)             |
 +--------------------------------------------------+
@@ -12,11 +9,10 @@ Below is the current function set and data flow for updates.
 | 4) discover all outgoing transfers               |
 |    (loop events -> updateOutgoingForEvent)       |
 | 5) rebuild incoming / sync_barrier()             |
-| 6) NO domination cleanup                         |
 +--------------------------------------------------+
 
 +--------------------------------------------------+
-| applyFullUpdates(changes, queryData)             |
+| applyFullUpdates -> ret {MinimizationCandidates} |
 +--------------------------------------------------+
 | 0) store.add_nodes(maxEventId)                   |
 |                                                  |
@@ -45,8 +41,8 @@ Below is the current function set and data flow for updates.
 | Phase 3: Incoming discovery                      |
 |  - allowTemporaryInconsistent(true)              |
 |  - targets: added trips + modified events        |
-|    (modified events include delayed arrivals;    |
-|     do NOT expand tripsWithDelayedArrivals)      |
+|    (NOTE: `tripsWithDelayedArrivals` is for      |
+|     minimization only and does not trigger this) |
 |  - loop target events -> updateIncomingForEvent  |
 |     * compute desired sources:                   |
 |        - connected source stops (footpaths)      |
@@ -63,6 +59,19 @@ Below is the current function set and data flow for updates.
 |  - triggered INSIDE updateIncomingForEvent       |
 |  - if a removed edge was isMinimized=true,       |
 |    mark source trip for re-minimization          |
+|                                                  |
+| During all phases, the implementation collects a |
+| set of trips that require re-minimization based  |
+| on the following rules:                          |
+|                                                  |
+| - Source trip of any transfer that is added or   |
+|   removed during a diff/apply step.              |
+| - Source trip of any incoming transfer that is   |
+|   redirected during trip cancellation.           |
+| - Source trip of any transfer removed by         |
+|   domination cleanup if it had `isMinimized=true`|
+| - Source trip of any transfer pointing to a trip |
+|   in the `tripsWithDelayedArrivals` list.        |
 +--------------------------------------------------+
 
 +--------------------------------------------------+
@@ -78,11 +87,3 @@ Below is the current function set and data flow for updates.
 | loop trips: clearMinimizationFlags +             |
 |              recomputeMinimizedForTrip           |
 +--------------------------------------------------+
-
-Candidate selection guidance:
-- Any source trip whose outgoing diff changed (add/remove).
-- Any source trip that gained/removed incoming transfers due to redirection.
-- Any source trip whose existing transfers were removed by domination cleanup,
-  but only if a removed edge had isMinimized=true.
-- Any source trip that transfers into a trip with delayed arrivals.
-```
