@@ -135,11 +135,64 @@ private:
 
     /// Compute all feasible outgoing transfers from a single stop event.
     /// Skips events with invalid arrival times (constraints modeled as invalid times).
+    ///
+    /// /* Pseudocode for Outgoing Discovery:
+    ///    Let (t, i) be the source trip and stop index.
+    ///    Let connectedStops = {q : q is reachable from stop(t,i) via footpath} // O(F)
+    ///
+    ///    // Optional route-based pruning tracking
+    ///    Map<RouteId, Array<TripId>> earliestTrip
+    ///
+    ///    for each q in connectedStops: // F times
+    ///        for each RouteSegment (S, j) at q: // R_avg times
+    ///            toTrip = getEarliestTrip(S, j, arrival(t,i) + footpath(stop(t,i)->q)) // O(log T_avg)
+    ///            
+    ///            if toTrip == noTripId: continue // O(1)
+    ///            if S == route(t) AND toTrip >= t AND j >= i: continue  // O(1) same-route forward
+    ///            if isUTurn(t, i, toTrip, j): continue // O(1)
+    ///
+    ///            // OPTIONAL route-based pruning:
+    ///            // if toTrip >= earliestTrip[S][j]: continue // O(log R_avg)
+    ///            // for k = j..lastIndex(S): // O(S_max)
+    ///            //     earliestTrip[S][k] = min(earliestTrip[S][k], toTrip)
+    ///
+    ///            out.push_back(toEvent(toTrip, j)) // O(1) amortized
+    ///
+    ///    Total Complexity: O(F * R_avg * log T_avg)
+    ///    With optional pruning: O(F * R_avg * (log T_avg + log R_avg + S_max))
+    /// */
     void computeOutgoingTransfers(PersistentStopEventId fromEvent,
                                   std::vector<PersistentStopEventId>& out) const;
 
     /// Compute all feasible incoming transfers to a single stop event.
     /// Skips events with invalid departure times (constraints modeled as invalid times).
+    ///
+    /// /* Pseudocode for Incoming Discovery:
+    ///    Let (u, j) be the target trip and stop index, and R = route(u).
+    ///    Let uPrev = previous trip on R (if any). // O(log T_avg)
+    ///    Let connectedStops = {q : q can reach stop(u,j) via footpath} // O(F)
+    ///
+    ///    for each q in connectedStops: // F times
+    ///        maxArr = departure(u, j) - footpath(q->stop(u,j)) // O(1)
+    ///        minArr = uPrev ? departure(uPrev, j) - footpath(...) : -infinity // O(1)
+    ///
+    ///        for each RouteSegment (S, i) at q: // R_avg times
+    ///            // This loop is the expensive part
+    ///            for each source trip t on S where arrival(t,i) > minArr AND arrival(t,i) <= maxArr: // O(T_s)
+    ///                
+    ///                if S == R AND u >= t AND j >= i: continue  // O(1) same-route forward
+    ///                if isUTurn(t, i, u, j): continue // O(1)
+    ///
+    ///                // Exact mirror of outgoing route-based pruning (OPTIONAL):
+    ///                // earliest = findEarliestTripOnRoute(R, j, arrival(t,i) + footpath) // O(log T_avg)
+    ///                // if earliest != u: continue
+    ///
+    ///                out.push_back(fromEvent(t, i)) // O(1) amortized
+    ///
+    ///    Total Complexity: O(F * R_avg * T_s)
+    ///    With optional pruning: O(F * R_avg * T_s * log T_avg)
+    ///    (where F=footpath fan-in, R_avg=routes/stop, T_s=source trips in window)
+    /// */
     void computeIncomingTransfers(PersistentStopEventId toEvent,
                                   std::vector<PersistentStopEventId>& out) const;
 
@@ -195,6 +248,19 @@ private:
     ///
     /// For a newly inserted transfer (from -> to), remove transfers from the same source trip
     /// to later trips on the target route/line that are dominated by this transfer.
+    ///
+    /// /* Pseudocode for Domination Cleanup:
+    ///    Let (t, i) be the fromEvent, (u, j) be the toEvent.
+    ///    
+    ///    // O(O_t), where O_t is # of outgoing transfers from (t,i)
+    ///    for each transfer (t, i) -> (u2, j2) currently in the store where route(u2) == route(u):
+    ///        if u2 > u OR (u2 == u AND j2 > j): // O(1)
+    ///            remove (t, i) -> (u2, j2) // O(log O_t) if sorted, O(1) in batch
+    ///            if removed transfer had isMinimized=true: // O(1)
+    ///                mark trip t for re-minimization
+    ///
+    ///    Total Complexity: O(O_t)
+    /// */
     void dominationCleanupForInsertedTransfer(PersistentStopEventId fromEvent,
                                               PersistentStopEventId toEvent);
 
