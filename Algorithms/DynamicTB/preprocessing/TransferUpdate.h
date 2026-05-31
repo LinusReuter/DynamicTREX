@@ -38,7 +38,7 @@ public:
     using Store = ITansferStore<PersistentStopEventId, TransferMeta>;
     using DynamicQueryData = DynamicTimeTable::Algo::DynamicQueryData;
 
-    explicit TransferUpdate(Store& store);
+    explicit TransferUpdate(Store& store) : store_(store) {}
 
     /**
      * Full rebuild: clears the store and (re)discovers all outgoing transfers.
@@ -50,7 +50,40 @@ public:
      * This does NOT set minimization flags
      * (call buildInitialMinimizedTransfers).
      */
-    void buildInitialFullTransfers(const DynamicQueryData& queryData);
+    void buildInitialFullTransfers(const DynamicQueryData& queryData) {
+        queryData_ = &queryData;
+
+        // Total number of persistent stop events
+        NodeID maxEventId = NodeID(queryData_->persistentToFlatEvent.size());
+
+        // 1) Ensure the store has nodes for all stop events
+        store_.add_nodes(maxEventId);
+
+        // 2) Clear store
+        for (std::size_t i = 0; i < std::size_t(maxEventId); ++i) {
+            store_.clear_outgoing(NodeID(i));
+        }
+
+        // 3) Allow temporary inconsistency during bulk inserts
+        store_.allowTemporaryInconsistent(true);
+
+        // 4) Discover all outgoing transfers
+        for (std::size_t i = 0; i < std::size_t(maxEventId); ++i) {
+            PersistentStopEventId event(i);
+
+            // Skip invalid/removed events
+            StopEventId flatEvent = queryData_->persistentToFlatEvent[i];
+            if (flatEvent == noStopEvent) continue;
+
+            updateOutgoingForEvent(event);
+        }
+
+        // 5) Rebuild incoming / sync_barrier()
+        store_.rebuild_incoming();
+        store_.sync_barrier();
+
+        store_.allowTemporaryInconsistent(false);
+    }
 
     /**
      * Incremental FULL-set update pipeline driven by the latest ChangeSummary:
@@ -123,7 +156,11 @@ private:
     /// Requires a valid arrival time (constraints are modeled as invalid times),
     /// and must enforce U-turn filtering + max-wait cap.
     /// Uses an outgoing batch (incoming=false) to apply the diff.
-    void updateOutgoingForEvent(PersistentStopEventId event);
+    void updateOutgoingForEvent(PersistentStopEventId event) {
+        std::vector<PersistentStopEventId> desired;
+        computeOutgoingTransfers(event, desired);
+        applyOutgoingDiff(event, desired);
+    }
 
     /// Update (compute + apply) incoming transfers for a single stop event.
     /// Uses store.incoming(target) for the current set and applies diffs via incoming batches.
@@ -146,7 +183,7 @@ private:
     ///    for each q in connectedStops: // F times
     ///        for each RouteSegment (S, j) at q: // R_avg times
     ///            toTrip = getEarliestTrip(S, j, arrival(t,i) + footpath(stop(t,i)->q)) // O(log T_avg)
-    ///            
+    ///
     ///            if toTrip == noTripId: continue // O(1)
     ///            if S == route(t) AND toTrip >= t AND j >= i: continue  // O(1) same-route forward
     ///            if isUTurn(t, i, toTrip, j): continue // O(1)
@@ -161,8 +198,91 @@ private:
     ///    Total Complexity: O(F * R_avg * log T_avg)
     ///    With optional pruning: O(F * R_avg * (log T_avg + log R_avg + S_max))
     /// */
-    void computeOutgoingTransfers(PersistentStopEventId fromEvent,
-                                  std::vector<PersistentStopEventId>& out) const;
+    inline void computeOutgoingTransfers(PersistentStopEventId fromEvent,
+                                  std::vector<PersistentStopEventId>& out) const {
+        constexpr bool kEnableRouteBasedPruning = true;
+
+        StopEventId flatFromEvent = queryData_->persistentToFlatEvent[fromEvent];
+        if (flatFromEvent == noStopEvent) return;
+
+        Time arrTime = arrivalTimeOfEvent(fromEvent);
+        if (arrTime == never) return; // invalid arrival time
+
+        StopId fromStop = stopOfEvent(fromEvent);
+        TripId flatFromTrip = queryData_->queryData.tripOfStopEvent[flatFromEvent];
+        PersistentTripId fromTripP = queryData_->flatToPersistentTrip[flatFromTrip];
+        RouteId fromRoute = queryData_->queryData.routeOfTrip[flatFromTrip];
+        StopIndex fromIndex = stopIndexOfEvent(fromEvent);
+
+        std::vector<std::pair<StopId, Time>> connectedStops;
+        appendConnectedStops(fromStop, connectedStops);
+
+        struct Target {
+            RouteId route;
+            StopIndex j;
+            Time footPathTime;
+        };
+
+        std::vector<Target> targets;
+        targets.reserve(connectedStops.size() * 4); // heuristic pre-allocation
+
+        for (const auto& [q, footPathTime] : connectedStops) {
+            auto routesAtQ = queryData_->queryData.routesContainingStop(q);
+            for (const auto& segment : routesAtQ) {
+                targets.push_back({segment.routeId, segment.stopIndex, footPathTime});
+            }
+        }
+
+        if constexpr (kEnableRouteBasedPruning) {
+            // Sorting by route, then stop index ascending.
+            // By visiting stops sequentially along a route, we can just maintain the
+            // earliest trip we can catch so far. Any later stop yielding the same
+            // or a later trip is dominated.
+            std::sort(targets.begin(), targets.end(), [](const Target& a, const Target& b) {
+                if (a.route != b.route) return a.route < b.route;
+                if (a.j != b.j) return a.j < b.j;
+                return a.footPathTime < b.footPathTime;
+            });
+        }
+
+        RouteId currentRoute = RouteId(noRouteId);
+        TripId minTripSoFar = TripId(noTripId);
+
+        for (const auto& target : targets) {
+            if constexpr (kEnableRouteBasedPruning) {
+                if (target.route != currentRoute) {
+                    currentRoute = target.route;
+                    minTripSoFar = TripId(noTripId);
+                }
+            }
+
+            Time minArr = arrTime + target.footPathTime;
+            std::optional<TripId> optToTrip = findEarliestTripOnRoute(target.route, target.j, minArr);
+            if (!optToTrip) continue;
+
+            TripId toTrip = *optToTrip;
+
+            if constexpr (kEnableRouteBasedPruning) {
+                if (toTrip >= minTripSoFar) continue;
+                minTripSoFar = toTrip;
+            }
+
+            // same-route forward check
+            if (target.route == fromRoute && toTrip >= flatFromTrip && target.j >= fromIndex) continue;
+
+
+            if (isUTurn(fromTrip, fromIndex, toTrip, target.j)) continue;
+
+            PersistentTripId toTripP = queryData_->flatToPersistentTrip[toTrip];
+            std::optional<PersistentStopEventId> toEventP = eventId(toTripP, target.j);
+            if (toEventP) {
+                out.push_back(*toEventP);
+            }
+        }
+
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
+    }
 
     /// Compute all feasible incoming transfers to a single stop event.
     /// Skips events with invalid departure times (constraints modeled as invalid times).
@@ -179,7 +299,7 @@ private:
     ///        for each RouteSegment (S, i) at q: // R_avg times
     ///            // This loop is the expensive part
     ///            for each source trip t on S where arrival(t,i) > minArr AND arrival(t,i) <= maxArr: // O(T_s)
-    ///                
+    ///
     ///                if S == R AND u >= t AND j >= i: continue  // O(1) same-route forward
     ///                if isUTurn(t, i, u, j): continue // O(1)
     ///
@@ -197,8 +317,17 @@ private:
                                   std::vector<PersistentStopEventId>& out) const;
 
     /// Expand a stop into itself + footpath neighbors with transfer time.
-    void appendConnectedStops(StopId fromStop,
-                              std::vector<std::pair<StopId, Time>>& out) const;
+    inline void appendConnectedStops(StopId fromStop,
+                              std::vector<std::pair<StopId, Time>>& out) const {
+        out.emplace_back(fromStop, 0);
+
+        const auto& tg = queryData_->queryData.transferGraph;
+        for (const auto edge : tg.edgesFrom(fromStop)) {
+            StopId toStop = StopId(tg.get(ToVertex, edge));
+            Time travelTime = Time(tg.get(TravelTime, edge));
+            out.emplace_back(toStop, travelTime);
+        }
+    }
 
     /// Find earliest feasible event on any route containing the stop.
     std::optional<PersistentStopEventId> findEarliestEvent(StopId stop, Time minDepartureTime,
@@ -211,8 +340,45 @@ private:
     /// using an outgoing batch (incoming=false).
     /// Persist TransferMeta for unchanged edges; new edges get isMinimized=false.
     /// Any add/remove marks the source trip for re-minimization.
-    void applyOutgoingDiff(PersistentStopEventId fromEvent,
-                           std::span<const PersistentStopEventId> desired);
+    inline void applyOutgoingDiff(PersistentStopEventId fromEvent,
+                           std::span<const PersistentStopEventId> desired) {
+        auto batch = store_.begin_batch(fromEvent, false);
+
+        auto current_span = store_.outgoing(fromEvent);
+        std::vector<Store::OutEdge> current(current_span.begin(), current_span.end());
+
+        std::sort(current.begin(), current.end(), [](const auto& a, const auto& b) {
+            return a.to < b.to;
+        });
+
+        auto curr_it = current.begin();
+        auto des_it = desired.begin();
+
+        while (curr_it != current.end() && des_it != desired.end()) {
+            if (curr_it->to < *des_it) {
+                store_.remove_outgoing_edge(batch, curr_it->to);
+                ++curr_it;
+            } else if (curr_it->to > *des_it) {
+                store_.add_outgoing_edge(batch, *des_it, TransferMeta{false});
+                ++des_it;
+            } else {
+                ++curr_it;
+                ++des_it;
+            }
+        }
+
+        while (curr_it != current.end()) {
+            store_.remove_outgoing_edge(batch, curr_it->to);
+            ++curr_it;
+        }
+
+        while (des_it != desired.end()) {
+            store_.add_outgoing_edge(batch, *des_it, TransferMeta{false});
+            ++des_it;
+        }
+
+        store_.commit_batch(batch);
+    }
 
     /// Apply the diff between current incoming edges and the desired set
     /// using an incoming batch (incoming=true).
@@ -251,7 +417,7 @@ private:
     ///
     /// /* Pseudocode for Domination Cleanup:
     ///    Let (t, i) be the fromEvent, (u, j) be the toEvent.
-    ///    
+    ///
     ///    // O(O_t), where O_t is # of outgoing transfers from (t,i)
     ///    for each transfer (t, i) -> (u2, j2) currently in the store where route(u2) == route(u):
     ///        if u2 > u OR (u2 == u AND j2 > j): // O(1)
@@ -278,31 +444,93 @@ private:
     // === Transfer validity helpers ===
 
     /// Guard against U-turn transfers that are invalid by topology/time.
-    bool isUTurn(PersistentTripId fromTrip, StopIndex fromIndex,
-                 PersistentTripId toTrip, StopIndex toIndex) const;
+    inline bool isUTurn(const TripId fromTrip, const StopIndex fromIndex, const TripId toTrip,
+                        const StopIndex toIndex) const noexcept {
+        if (fromIndex < 2) return false;
+        if (toIndex + 1 >= queryData_->queryData.numberOfStopsInTrip(toTrip)) return false;
+        if (queryData_->queryData.getStop(fromTrip, StopIndex(fromIndex - 1)) != queryData_->queryData.getStop(toTrip, StopIndex(toIndex + 1)))
+            return false;
+        if (queryData_->queryData.getStopEvent(fromTrip, StopIndex(fromIndex - 1)).arrivalTime >
+            queryData_->queryData.getStopEvent(toTrip, StopIndex(toIndex + 1)).departureTime)
+            return false;
+        return true;
+    }
 
     // === Timetable resolution helpers ===
+    // #TODO: Later check all calls and optimize variants to minimize persistent to flat conversions in caller and callee
 
     /// Map (trip, index) -> stop event id (if valid).
-    std::optional<PersistentStopEventId> eventId(PersistentTripId trip, StopIndex index) const;
+    inline std::optional<PersistentStopEventId> eventId(PersistentTripId trip, StopIndex index) const {
+        TripId flatTrip = queryData_->persistentToFlatTrip[trip];
+        if (flatTrip == noTripId) return std::nullopt;
+        StopEventId firstEvent = queryData_->queryData.firstStopEventOfTrip[flatTrip];
+        StopEventId flatEvent = StopEventId(firstEvent + index);
+        PersistentStopEventId pEvent = queryData_->flatToPersistentEvent[flatEvent];
+        return pEvent;
+    }
 
     /// Resolve stop index from a stop event id.
-    StopIndex stopIndexOfEvent(PersistentStopEventId event) const;
+    inline StopIndex stopIndexOfEvent(PersistentStopEventId event) const {
+        StopEventId flatEvent = queryData_->persistentToFlatEvent[event];
+        TripId flatTrip = queryData_->queryData.tripOfStopEvent[flatEvent];
+        StopEventId firstEvent = queryData_->queryData.firstStopEventOfTrip[flatTrip];
+        return StopIndex(flatEvent - firstEvent);
+    }
 
     /// Resolve stop id from a stop event id.
-    StopId stopOfEvent(PersistentStopEventId event) const;
+    inline StopId stopOfEvent(PersistentStopEventId event) const {
+        StopEventId flatEvent = queryData_->persistentToFlatEvent[event];
+        return queryData_->queryData.eventLookup[flatEvent].stop;
+    }
 
     /// Access arrival time from a stop event id.
-    Time arrivalTimeOfEvent(PersistentStopEventId event) const;
+    inline Time arrivalTimeOfEvent(PersistentStopEventId event) const {
+        StopEventId flatEvent = queryData_->persistentToFlatEvent[event];
+        return Time(queryData_->queryData.eventArrTimes[flatEvent]);
+    }
 
     /// Access departure time from a stop event id.
-    Time departureTimeOfEvent(PersistentStopEventId event) const;
+    inline Time departureTimeOfEvent(PersistentStopEventId event) const {
+        StopEventId flatEvent = queryData_->persistentToFlatEvent[event];
+        return Time(queryData_->queryData.eventDepTimes[flatEvent]);
+    }
 
     // === Query-data access ===
 
     /// Earliest feasible trip on a flat route for a given stop index + time.
     /// Must respect a max-wait cap (e.g., 24h) to avoid unrealistic transfers.
-    std::optional<TripId> findEarliestTripOnRoute(RouteId route, StopIndex stopIndex, Time minDepartureTime) const;
+    inline std::optional<TripId> findEarliestTripOnRoute(RouteId route, StopIndex stopIndex, Time minDepartureTime) const {
+        const auto& routeLabel = queryData_->queryData.routeLabels[route];
+        uint32_t numTrips = routeLabel.numberOfTrips;
+
+        int baseOffset = stopIndex * numTrips;
+
+        int left = 0;
+        int right = numTrips - 1;
+        int bestTrip = -1;
+
+        while (left <= right) {
+            int mid = left + (right - left) / 2;
+            Time dep = Time(routeLabel.departureTimes[baseOffset + mid]);
+            if (dep >= minDepartureTime) {
+                bestTrip = mid;
+                right = mid - 1;
+            } else {
+                left = mid + 1;
+            }
+        }
+
+        if (bestTrip != -1) {
+            Time dep = Time(routeLabel.departureTimes[baseOffset + bestTrip]);
+            // 24 hours max-wait cap
+            if (dep > minDepartureTime + 24 * 60 * 60) {
+                return std::nullopt;
+            }
+            TripId firstTrip = queryData_->queryData.firstTripOfRoute[route];
+            return TripId(firstTrip + bestTrip);
+        }
+        return std::nullopt;
+    }
 
 private:
     const DynamicQueryData* queryData_{nullptr};
