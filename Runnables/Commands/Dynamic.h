@@ -9,7 +9,10 @@
 #include "../../Algorithms/DynamicTimeTable/BuildQueryData.h"
 #include "../../Algorithms/DynamicTimeTable/Update.h"
 #include "../../Algorithms/DynamicTimeTable/UpdateSimulation.h"
+#include "../../Algorithms/DynamicTB/preprocessing/TransferUpdate.h"
 #include "../../DataStructures/DynamicTimeTable/Data.h"
+#include "../../DataStructures/Graph/Graph.h"
+#include "../../DataStructures/TransferStore/DynamicGraphTransferStore.h"
 #include "../../Shell/Shell.h"
 
 using namespace Shell;
@@ -99,6 +102,52 @@ public:
     }
 };
 
+
+class BuildInitialTransferStore : public ParameterizedCommand {
+public:
+    BuildInitialTransferStore(BasicShell &shell)
+        : ParameterizedCommand(
+              shell, "buildInitialTransferStore",
+              "Loads a DynamicTimeTable and builds the initial transfer store (full set).") {
+        addParameter("Input binary (DynamicTimeTable Data)");
+    }
+
+    virtual void execute() noexcept override {
+        const std::string dynamicFile = getParameter("Input binary (DynamicTimeTable Data)");
+
+        std::cout << "Loading DynamicTimeTable..." << std::endl;
+        DynamicTimeTable::Data dynamicTimeTable(dynamicFile);
+        dynamicTimeTable.printInfo();
+
+        std::cout << "Building DynamicQueryData..." << std::endl;
+        auto start = std::chrono::high_resolution_clock::now();
+        auto queryData = DynamicTimeTable::Algo::DynamicQueryData::buildFromDynamic(dynamicTimeTable);
+        auto stop = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+        std::cout << "DynamicQueryData built in " << duration << std::endl;
+
+        std::cout << "Building initial transfer store..." << std::endl;
+        using TransferMeta = DynamicTB::Preprocessing::TransferMeta;
+        static constexpr AttributeNameType TransferMetaAttrName = 1000;
+        using TransferStoreGraph =
+            DynamicGraph<NoVertexAttributes, List<Attribute<TransferMetaAttrName, TransferMeta>>>;
+        using TransferStore =
+            DynamicGraphTransferStore<TransferStoreGraph, PersistentStopEventId, TransferMeta, TransferMetaAttrName>;
+
+        TransferStoreGraph transferGraph;
+        TransferStore store(transferGraph);
+        DynamicTB::Preprocessing::TransferUpdate updater(store);
+
+        start = std::chrono::high_resolution_clock::now();
+        updater.buildInitialFullTransfers(queryData);
+        stop = std::chrono::high_resolution_clock::now();
+        duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+
+        std::cout << "Initial transfer store built in " << duration << std::endl;
+        std::cout << "  Nodes: " << transferGraph.numVertices() << std::endl;
+        std::cout << "  Edges: " << transferGraph.numEdges() << std::endl;
+    }
+};
 
 class SimulateDynamicUpdates : public ParameterizedCommand {
 public:
