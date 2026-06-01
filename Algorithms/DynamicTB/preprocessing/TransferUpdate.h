@@ -35,8 +35,9 @@ struct TransferMeta {
  */
 class TransferUpdate {
 public:
-    using Store = ITansferStore<PersistentStopEventId, TransferMeta>;
+    using Store = ITransferStore<PersistentStopEventId, TransferMeta>;
     using DynamicQueryData = DynamicTimeTable::Algo::DynamicQueryData;
+    using NodeID = PersistentStopEventId;
 
     explicit TransferUpdate(Store& store) : store_(store) {}
 
@@ -44,8 +45,8 @@ public:
      * Full rebuild: clears the store and (re)discovers all outgoing transfers.
      *
      * Implementation notes:
-     * - Ensure the store has nodes for all stop events (store.add_nodes(maxEventId)).
-     * - Allow temporary inconsistency during bulk inserts, then rebuild/sync incoming once.
+     * - Ensure the store has nodes for all stop events (store.begin_outgoing_init(maxEventId)).
+     * - Build outgoing only (no diff); then rebuild/sync incoming once via finish_outgoing_init().
      *
      * This does NOT set minimization flags
      * (call buildInitialMinimizedTransfers).
@@ -54,35 +55,39 @@ public:
         queryData_ = &queryData;
 
         // Total number of persistent stop events
-        NodeID maxEventId = NodeID(queryData_->persistentToFlatEvent.size());
+        const std::size_t eventCount = queryData_->persistentToFlatEvent.size();
 
-        // 1) Ensure the store has nodes for all stop events
-        store_.add_nodes(maxEventId);
-
-        // 2) Clear store
-        for (std::size_t i = 0; i < std::size_t(maxEventId); ++i) {
-            store_.clear_outgoing(NodeID(i));
+        if (eventCount == 0) {
+            // Clear any previous data, if present.
+            store_.clear();
+            return;
         }
 
-        // 3) Allow temporary inconsistency during bulk inserts
-        store_.allowTemporaryInconsistent(true);
+        // 1) Prepare outgoing-only init mode
+        const NodeID maxEventId = NodeID(eventCount - 1);
+        store_.begin_outgoing_init(maxEventId);
 
-        // 4) Discover all outgoing transfers
-        for (std::size_t i = 0; i < std::size_t(maxEventId); ++i) {
+        // 2) Clear store (full clear; incoming will be rebuilt in bulk)
+        store_.clear();
+
+        // 3) Discover all outgoing transfers (no diff; init-only add)
+        for (std::size_t i = 0; i < eventCount; ++i) {
             PersistentStopEventId event(i);
 
             // Skip invalid/removed events
             StopEventId flatEvent = queryData_->persistentToFlatEvent[i];
             if (flatEvent == noStopEvent) continue;
 
-            updateOutgoingForEvent(event);
+            std::vector<PersistentStopEventId> desired;
+            computeOutgoingTransfers(event, desired);
+            if (!desired.empty()) {
+                store_.reserve_outgoing(event, desired.size());
+                store_.add_outgoing_edges_init(event, desired, TransferMeta{false});
+            }
         }
 
-        // 5) Rebuild incoming / sync_barrier()
-        store_.rebuild_incoming();
-        store_.sync_barrier();
-
-        store_.allowTemporaryInconsistent(false);
+        // 4) Rebuild incoming / sync_barrier()
+        store_.finish_outgoing_init();
     }
 
     /**
@@ -210,7 +215,6 @@ private:
 
         StopId fromStop = stopOfEvent(fromEvent);
         TripId flatFromTrip = queryData_->queryData.tripOfStopEvent[flatFromEvent];
-        PersistentTripId fromTripP = queryData_->flatToPersistentTrip[flatFromTrip];
         RouteId fromRoute = queryData_->queryData.routeOfTrip[flatFromTrip];
         StopIndex fromIndex = stopIndexOfEvent(fromEvent);
 
@@ -271,7 +275,7 @@ private:
             if (target.route == fromRoute && toTrip >= flatFromTrip && target.j >= fromIndex) continue;
 
 
-            if (isUTurn(fromTrip, fromIndex, toTrip, target.j)) continue;
+            if (isUTurn(flatFromTrip, fromIndex, toTrip, target.j)) continue;
 
             PersistentTripId toTripP = queryData_->flatToPersistentTrip[toTrip];
             std::optional<PersistentStopEventId> toEventP = eventId(toTripP, target.j);
@@ -447,11 +451,11 @@ private:
     inline bool isUTurn(const TripId fromTrip, const StopIndex fromIndex, const TripId toTrip,
                         const StopIndex toIndex) const noexcept {
         if (fromIndex < 2) return false;
-        if (toIndex + 1 >= queryData_->queryData.numberOfStopsInTrip(toTrip)) return false;
-        if (queryData_->queryData.getStop(fromTrip, StopIndex(fromIndex - 1)) != queryData_->queryData.getStop(toTrip, StopIndex(toIndex + 1)))
+        if (toIndex + 1 >= queryData_->numberOfStopsInTrip(toTrip)) return false;
+        if (queryData_->getStop(fromTrip, StopIndex(fromIndex - 1)) != queryData_->getStop(toTrip, StopIndex(toIndex + 1)))
             return false;
-        if (queryData_->queryData.getStopEvent(fromTrip, StopIndex(fromIndex - 1)).arrivalTime >
-            queryData_->queryData.getStopEvent(toTrip, StopIndex(toIndex + 1)).departureTime)
+        if (queryData_->arrivalTime(fromTrip, StopIndex(fromIndex - 1)) >
+            queryData_->departureTime(toTrip, StopIndex(toIndex + 1)))
             return false;
         return true;
     }
@@ -501,17 +505,26 @@ private:
     /// Must respect a max-wait cap (e.g., 24h) to avoid unrealistic transfers.
     inline std::optional<TripId> findEarliestTripOnRoute(RouteId route, StopIndex stopIndex, Time minDepartureTime) const {
         const auto& routeLabel = queryData_->queryData.routeLabels[route];
-        uint32_t numTrips = routeLabel.numberOfTrips;
+        const uint32_t numTrips = routeLabel.numberOfTrips;
 
-        int baseOffset = stopIndex * numTrips;
+        if (numTrips == 0) return std::nullopt;
+
+        const size_t stopSeqStart = queryData_->queryData.firstStopIdOfRoute[route];
+        const size_t stopSeqEnd = queryData_->queryData.firstStopIdOfRoute[route + 1];
+        const size_t numStops = stopSeqEnd - stopSeqStart;
+        if (numStops < 2) return std::nullopt;
+        if (static_cast<size_t>(stopIndex) + 1 >= numStops) return std::nullopt; // no departure at last stop
+
+        const size_t baseOffset = static_cast<size_t>(stopIndex) * numTrips;
+        if (baseOffset >= routeLabel.departureTimes.size()) return std::nullopt;
 
         int left = 0;
-        int right = numTrips - 1;
+        int right = static_cast<int>(numTrips) - 1;
         int bestTrip = -1;
 
         while (left <= right) {
             int mid = left + (right - left) / 2;
-            Time dep = Time(routeLabel.departureTimes[baseOffset + mid]);
+            Time dep = Time(routeLabel.departureTimes[baseOffset + static_cast<size_t>(mid)]);
             if (dep >= minDepartureTime) {
                 bestTrip = mid;
                 right = mid - 1;
@@ -521,7 +534,7 @@ private:
         }
 
         if (bestTrip != -1) {
-            Time dep = Time(routeLabel.departureTimes[baseOffset + bestTrip]);
+            Time dep = Time(routeLabel.departureTimes[baseOffset + static_cast<size_t>(bestTrip)]);
             // 24 hours max-wait cap
             if (dep > minDepartureTime + 24 * 60 * 60) {
                 return std::nullopt;

@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cstddef>
 #include <span>
 
@@ -6,8 +8,9 @@
 /// - No multi‑edges: (from, to) is unique
 /// - Incoming/outgoing may be temporarily unsynchronized until `sync_barrier()`
 /// Usage
+/// - **Init (full rebuild):** `begin_outgoing_init(maxNodeId)` → clear outgoing → `add_outgoing_edges_init(...)` → `finish_outgoing_init()`
 /// - **Phase 0 Removed lines:** `allowTemporaryInconsistent(true)` → apply clears → `sync_barrier()`
-/// - **Phase 1 Trip cancellation:** same pattern; redirections only add new edges not touching any cancelld Event, async allowed
+/// - **Phase 1 Trip cancellation:** same pattern; redirections only add new edges not touching any cancelled Event, async allowed
 /// - **Barrier**
 /// - **Phase 2 Outgoing:** update outgoing with temporary inconsistency enabled → `sync_barrier()`
 /// - **Phase 3 Incoming:** update incoming with temporary inconsistency enabled → `sync_barrier()`
@@ -16,7 +19,7 @@
 
 
 template <typename NodeID, typename EdgeMeta>
-class ITansferStore {
+class ITransferStore {
 public:
     /// Outgoing edge record stored per source node.
     struct OutEdge {
@@ -30,7 +33,7 @@ public:
     using incoming_span = std::span<const NodeID>;
     using batch_id_type = std::size_t;
 
-    virtual ~ITansferStore() = default;
+    virtual ~ITransferStore() = default;
 
     /// Current number of nodes (valid IDs are 0..node_count()-1).
     virtual std::size_t node_count() const noexcept = 0;
@@ -72,6 +75,42 @@ public:
 
     /// Block until all queued sync work has been applied.
     virtual void sync_barrier() = 0;
+
+    // === Initial build helpers (outgoing-only, incoming built in bulk) ===
+
+    /// Begin initial build mode (outgoing only). Implementations may defer any
+    /// incoming maintenance until `finish_outgoing_init()`.
+    /// Default: add_nodes(maxNodeId) and allowTemporaryInconsistent(true).
+    virtual void begin_outgoing_init(NodeID maxNodeId) {
+        add_nodes(maxNodeId);
+        allowTemporaryInconsistent(true);
+    }
+
+    /// Add a single outgoing edge during initial build.
+    /// Default: forwards to add_edge().
+    virtual void add_outgoing_edge_init(NodeID from, NodeID to, const EdgeMeta& meta) {
+        add_edge(from, to, meta);
+    }
+
+    /// Add multiple outgoing edges during initial build (same meta for all).
+    /// Default: forwards to add_outgoing_edge_init() in a loop.
+    virtual void add_outgoing_edges_init(NodeID from, std::span<const NodeID> to,
+                                         const EdgeMeta& meta) {
+        for (const NodeID dst : to) {
+            add_outgoing_edge_init(from, dst, meta);
+        }
+    }
+
+    /// Finish initial build: rebuild incoming and synchronize.
+    /// Default: rebuild_incoming() -> sync_barrier() -> allowTemporaryInconsistent(false).
+    virtual void finish_outgoing_init() {
+        rebuild_incoming();
+        sync_barrier();
+        allowTemporaryInconsistent(false);
+    }
+
+    /// Clears the complete store
+    virtual void clear() = 0;
 
     /// Begin a batch for a single node. The batch ID must be used for all
     /// operations in that batch. The batch must only touch one node.

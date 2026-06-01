@@ -24,6 +24,35 @@ struct DynamicQueryData {
     std::vector<TripId> persistentToFlatTrip;
     std::vector<StopEventId> persistentToFlatEvent;
 
+    // --- Query helpers (flat IDs) ---
+    inline size_t numberOfStopsInTrip(const TripId trip) const noexcept {
+        const auto& first = queryData.firstStopEventOfTrip;
+        const size_t tripIdx = static_cast<size_t>(trip);
+        const size_t start = static_cast<size_t>(first[tripIdx]);
+        const size_t end = (tripIdx + 1 < first.size()) ? static_cast<size_t>(first[tripIdx + 1])
+                                                        : queryData.eventLookup.size();
+        return end - start;
+    }
+
+    inline StopEventId stopEventIdOfTripStop(const TripId trip, const StopIndex index) const noexcept {
+        return StopEventId(queryData.firstStopEventOfTrip[trip] + index);
+    }
+
+    inline StopId getStop(const TripId trip, const StopIndex index) const noexcept {
+        const StopEventId event = stopEventIdOfTripStop(trip, index);
+        return queryData.eventLookup[event].stop;
+    }
+
+    inline Time arrivalTime(const TripId trip, const StopIndex index) const noexcept {
+        const StopEventId event = stopEventIdOfTripStop(trip, index);
+        return Time(queryData.eventArrTimes[event]);
+    }
+
+    inline Time departureTime(const TripId trip, const StopIndex index) const noexcept {
+        const StopEventId event = stopEventIdOfTripStop(trip, index);
+        return Time(queryData.eventDepTimes[event]);
+    }
+
     std::pair<bool, std::string> validate(const DynamicTimeTable::Data& data) const {
         std::stringstream error_msg;
         const auto& qd = queryData;
