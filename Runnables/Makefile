@@ -111,6 +111,26 @@ endif
 
 RELEASE = $(RELEASE_BASE) $(SIMD_FLAGS)
 
+# -----------------------------
+# Profiling (Release with Frame Pointers & Debug Info)
+# -----------------------------
+ifeq ($(IS_ARM),)
+PROFILE_BASE = -ffast-math -ftree-vectorize -Wfatal-errors -DNDEBUG \
+               -fno-omit-frame-pointer -mtune=native -fno-stack-protector \
+               -funroll-loops -Wno-alloc-size-larger-than
+else
+PROFILE_BASE = -ffast-math -ftree-vectorize -Wfatal-errors -DNDEBUG \
+               -fno-omit-frame-pointer -fno-stack-protector \
+               -funroll-loops -Wno-alloc-size-larger-than
+endif
+
+PROFILE = $(PROFILE_BASE) $(SIMD_FLAGS)
+
+DynamicProfile:
+	$(CC) $(FLAGS) $(OPTIMIZATION) $(PROFILE) \
+	      -o Dynamic Dynamic.cpp -ltbb -latomic $(PREFETCH) -g
+
+
 # Prefetch / SIMD-related defines passed to source
 PREFETCH = -DENABLE_PREFETCH -DUSE_SIMD
 ifneq ($(IS_ARM),)
