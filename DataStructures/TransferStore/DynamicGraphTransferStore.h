@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <mutex>
 #include <shared_mutex>
@@ -28,6 +29,7 @@ public:
     using outgoing_span = typename Base::outgoing_span;
     using incoming_span = typename Base::incoming_span;
     using batch_id_type = typename Base::batch_id_type;
+    using Direction = typename Base::Direction;
 
     static_assert(Graph::template HasEdgeAttribute<META_ATTR>(AttributeNameWrapper<META_ATTR>()),
                   "DynamicGraph is missing required EdgeMeta attribute");
@@ -50,7 +52,7 @@ public:
         }
     }
 
-    outgoing_span outgoing(NodeID from) const override {
+    outgoing_span outgoing_sorted(NodeID from) const override {
         std::shared_lock lock(mutex_);
         const Vertex v = to_vertex(from);
         if (!graph_.isVertex(v)) {
@@ -67,10 +69,13 @@ public:
             const EdgeMeta meta = graph_.get(meta_attr_, edge);
             tls_out.push_back(OutEdge{to_node(to), meta});
         }
+        std::sort(tls_out.begin(), tls_out.end(), [](const auto& a, const auto& b) {
+            return a.to < b.to;
+        });
         return outgoing_span(tls_out.data(), tls_out.size());
     }
 
-    incoming_span incoming(NodeID to) const override {
+    incoming_span incoming_sorted(NodeID to) const override {
         std::shared_lock lock(mutex_);
         const Vertex v = to_vertex(to);
         if (!graph_.isVertex(v)) {
@@ -87,6 +92,7 @@ public:
             const Vertex from = graph_.get(FromVertex, edge);
             tls_in.push_back(to_node(from));
         }
+        std::sort(tls_in.begin(), tls_in.end());
         return incoming_span(tls_in.data(), tls_in.size());
     }
 
@@ -185,10 +191,10 @@ public:
         // No-op: no async sync work.
     }
 
-    batch_id_type begin_batch(NodeID node, bool incoming) override {
+    batch_id_type begin_batch(NodeID node, Direction dir) override {
         auto& ctx = batch_context();
         ctx.node = node;
-        ctx.incoming = incoming;
+        ctx.incoming = (dir == Direction::Incoming);
         return batch_id_type{0};
     }
 

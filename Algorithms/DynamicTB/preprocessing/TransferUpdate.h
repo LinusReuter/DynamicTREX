@@ -63,12 +63,12 @@ public:
             return;
         }
 
-        // 1) Prepare outgoing-only init mode
+        // 1) Clear store (full clear; incoming will be rebuilt in bulk)
+        store_.clear();
+
+        // 2) Prepare outgoing-only init mode
         const NodeID maxEventId = NodeID(eventCount - 1);
         store_.begin_outgoing_init(maxEventId);
-
-        // 2) Clear store (full clear; incoming will be rebuilt in bulk)
-        store_.clear();
 
         // 3) Discover all outgoing transfers (no diff; init-only add)
         for (std::size_t i = 0; i < eventCount; ++i) {
@@ -160,7 +160,7 @@ private:
     /// Update (compute + apply) outgoing transfers for a single stop event.
     /// Requires a valid arrival time (constraints are modeled as invalid times),
     /// and must enforce U-turn filtering + max-wait cap.
-    /// Uses an outgoing batch (incoming=false) to apply the diff.
+    /// Uses an outgoing batch (Direction::Outgoing) to apply the diff.
     void updateOutgoingForEvent(PersistentStopEventId event) {
         std::vector<PersistentStopEventId> desired;
         computeOutgoingTransfers(event, desired);
@@ -168,7 +168,7 @@ private:
     }
 
     /// Update (compute + apply) incoming transfers for a single stop event.
-    /// Uses store.incoming(target) for the current set and applies diffs via incoming batches.
+    /// Uses store.incoming_sorted(target) for the current set and applies diffs via incoming batches.
     /// Requires a valid departure time (constraints are modeled as invalid times),
     /// and must enforce U-turn filtering + max-wait cap.
     /// New edges get isMinimized=false; existing edges preserve metadata.
@@ -341,24 +341,20 @@ private:
     // === Diff / apply ===
 
     /// Apply the diff between current outgoing edges and the desired set
-    /// using an outgoing batch (incoming=false).
+    /// using an outgoing batch (Direction::Outgoing).
+    /// Assumes store_.outgoing_sorted(fromEvent) is sorted by `to` and unique.
     /// Persist TransferMeta for unchanged edges; new edges get isMinimized=false.
     /// Any add/remove marks the source trip for re-minimization.
     inline void applyOutgoingDiff(PersistentStopEventId fromEvent,
                            std::span<const PersistentStopEventId> desired) {
-        auto batch = store_.begin_batch(fromEvent, false);
+        auto batch = store_.begin_batch(fromEvent, Store::Direction::Outgoing);
 
-        auto current_span = store_.outgoing(fromEvent);
-        std::vector<Store::OutEdge> current(current_span.begin(), current_span.end());
+        auto current_span = store_.outgoing_sorted(fromEvent);
 
-        std::sort(current.begin(), current.end(), [](const auto& a, const auto& b) {
-            return a.to < b.to;
-        });
-
-        auto curr_it = current.begin();
+        auto curr_it = current_span.begin();
         auto des_it = desired.begin();
 
-        while (curr_it != current.end() && des_it != desired.end()) {
+        while (curr_it != current_span.end() && des_it != desired.end()) {
             if (curr_it->to < *des_it) {
                 store_.remove_outgoing_edge(batch, curr_it->to);
                 ++curr_it;
@@ -371,7 +367,7 @@ private:
             }
         }
 
-        while (curr_it != current.end()) {
+        while (curr_it != current_span.end()) {
             store_.remove_outgoing_edge(batch, curr_it->to);
             ++curr_it;
         }
@@ -385,7 +381,7 @@ private:
     }
 
     /// Apply the diff between current incoming edges and the desired set
-    /// using an incoming batch (incoming=true).
+    /// using an incoming batch (Direction::Incoming).
     /// Persist TransferMeta for unchanged edges; new edges get isMinimized=false.
     /// When a new edge is inserted, trigger domination cleanup.
     /// If a removed edge had isMinimized=true, mark the source trip for re-minimization.

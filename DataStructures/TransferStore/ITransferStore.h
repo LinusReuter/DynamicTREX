@@ -1,11 +1,13 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <span>
 
 /// Interface for DAG TransferStore.
 /// - Node IDs are sequential: 0..n-1
-/// - No multi‑edges: (from, to) is unique
+/// - No multi-edges: (from, to) is unique
+/// - Adjacency views are sorted by neighbor ID and contain unique entries
 /// - Incoming/outgoing may be temporarily unsynchronized until `sync_barrier()`
 /// Usage
 /// - **Init (full rebuild):** `begin_outgoing_init(maxNodeId)` → clear outgoing → `add_outgoing_edges_init(...)` → `finish_outgoing_init()`
@@ -15,8 +17,6 @@
 /// - **Phase 2 Outgoing:** update outgoing with temporary inconsistency enabled → `sync_barrier()`
 /// - **Phase 3 Incoming:** update incoming with temporary inconsistency enabled → `sync_barrier()`
 /// - **Minimization**
-
-
 
 template <typename NodeID, typename EdgeMeta>
 class ITransferStore {
@@ -33,7 +33,11 @@ public:
     using incoming_span = std::span<const NodeID>;
     using batch_id_type = std::size_t;
 
+    enum class Direction : std::uint8_t { Outgoing, Incoming };
+
     virtual ~ITransferStore() = default;
+
+    // === Topology ===
 
     /// Current number of nodes (valid IDs are 0..node_count()-1).
     virtual std::size_t node_count() const noexcept = 0;
@@ -41,11 +45,21 @@ public:
     /// Append nodes to reach maxNodeId
     virtual void add_nodes(NodeID maxNodeId) = 0;
 
-    /// Outgoing adjacency view for `from` (read‑only).
-    virtual outgoing_span outgoing(NodeID from) const = 0;
+    // === Sorted adjacency views ===
 
-    /// Incoming adjacency view for `to` (read‑only sources only).
-    virtual incoming_span incoming(NodeID to) const = 0;
+    /// Outgoing adjacency view for `from` (read-only).
+    /// Contract: sorted by `to`, unique, and stable until commit_batch() for
+    /// the same node + direction (Outgoing). Opposite-direction maintenance
+    /// may update other nodes concurrently (no cross-direction stability guarantee).
+    virtual outgoing_span outgoing_sorted(NodeID from) const = 0;
+
+    /// Incoming adjacency view for `to` (read-only sources only).
+    /// Contract: sorted, unique, and stable until commit_batch() for
+    /// the same node + direction (Incoming). Opposite-direction maintenance
+    /// may update other nodes concurrently (no cross-direction stability guarantee).
+    virtual incoming_span incoming_sorted(NodeID to) const = 0;
+
+    // === Edge operations (non-batch) ===
 
     /// Returns read-only EdgeMeta of an given Edge.
     virtual EdgeMeta readEdgeMeta(NodeID from, NodeID to) const = 0;
@@ -59,11 +73,18 @@ public:
     /// Replace metadata for edge (from -> to). Returns false if edge missing.
     virtual bool update_edge_meta(NodeID from, NodeID to, const EdgeMeta& meta) = 0;
 
+    // === Clears ===
+
     /// Remove all outgoing edges for `from`.
     virtual void clear_outgoing(NodeID from) = 0;
 
     /// Remove all incoming edges for `to`.
     virtual void clear_incoming(NodeID to) = 0;
+
+    /// Clears the complete store
+    virtual void clear() = 0;
+
+    // === Phase / consistency ===
 
     /// Allow or disallow temporary inconsistency.
     /// When false (default), all methods return fully synchronized state.
@@ -109,28 +130,27 @@ public:
         allowTemporaryInconsistent(false);
     }
 
-    /// Clears the complete store
-    virtual void clear() = 0;
+    // === Batched updates (single node, single direction) ===
 
     /// Begin a batch for a single node. The batch ID must be used for all
     /// operations in that batch. The batch must only touch one node.
-    /// incoming=true: batch applies to incoming adjacency of `node`.
-    /// incoming=false: batch applies to outgoing adjacency of `node`.
-    virtual batch_id_type begin_batch(NodeID node, bool incoming) = 0;
+    /// Direction::Incoming: batch applies to incoming adjacency of `node`.
+    /// Direction::Outgoing: batch applies to outgoing adjacency of `node`.
+    virtual batch_id_type begin_batch(NodeID node, Direction dir) = 0;
 
     /// Commit a previously started batch.
     virtual void commit_batch(batch_id_type batch) = 0;
 
-    /// Batch‑scoped outgoing edge operations (batch node is the source).
+    /// Batch-scoped outgoing edge operations (batch node is the source).
     virtual bool add_outgoing_edge(batch_id_type batch, NodeID to,
                                    const EdgeMeta& meta) = 0;
     virtual bool remove_outgoing_edge(batch_id_type batch, NodeID to) = 0;
 
-    /// Batch‑scoped incoming edge operations (batch node is the target).
+    /// Batch-scoped incoming edge operations (batch node is the target).
     virtual bool add_incoming_edge(batch_id_type batch, NodeID from, const EdgeMeta& meta) = 0;
     virtual bool remove_incoming_edge(batch_id_type batch, NodeID from) = 0;
 
-    /// Optional performance hooks (no‑ops by default).
+    // === Optional performance hooks (no-ops by default) ===
     virtual void reserve_outgoing(NodeID, std::size_t) {}
     virtual void reserve_incoming(NodeID, std::size_t) {}
 };
