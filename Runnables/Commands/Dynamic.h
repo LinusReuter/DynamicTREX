@@ -12,7 +12,7 @@
 #include "../../Algorithms/DynamicTB/preprocessing/TransferUpdate.h"
 #include "../../DataStructures/DynamicTimeTable/Data.h"
 #include "../../DataStructures/Graph/Graph.h"
-#include "../../DataStructures/TransferStore/DynamicGraphTransferStore.h"
+#include "../../DataStructures/TransferStore/TransferStore.h"
 #include "../../Shell/Shell.h"
 
 using namespace Shell;
@@ -128,14 +128,9 @@ public:
 
         std::cout << "Building initial transfer store..." << std::endl;
         using TransferMeta = DynamicTB::Preprocessing::TransferMeta;
-        static constexpr AttributeNameType TransferMetaAttrName = 1000;
-        using TransferStoreGraph =
-            DynamicGraph<NoVertexAttributes, List<Attribute<TransferMetaAttrName, TransferMeta>>>;
-        using TransferStore =
-            DynamicGraphTransferStore<TransferStoreGraph, PersistentStopEventId, TransferMeta, TransferMetaAttrName>;
+        using TransferStoreType = TransferStore<PersistentStopEventId, TransferMeta>;
 
-        TransferStoreGraph transferGraph;
-        TransferStore store(transferGraph);
+        TransferStoreType store;
         DynamicTB::Preprocessing::TransferUpdate updater(store);
 
         start = std::chrono::high_resolution_clock::now();
@@ -144,8 +139,15 @@ public:
         duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
 
         std::cout << "Initial transfer store built in " << duration << std::endl;
-        std::cout << "  Nodes: " << transferGraph.numVertices() << std::endl;
-        std::cout << "  Edges: " << transferGraph.numEdges() << std::endl;
+
+        const std::size_t nodeCount = store.node_count();
+        std::size_t edgeCount = 0;
+        for (std::size_t i = 0; i < nodeCount; ++i) {
+            edgeCount += store.outgoing_sorted(PersistentStopEventId(i)).size();
+        }
+
+        std::cout << "  Nodes: " << nodeCount << std::endl;
+        std::cout << "  Edges: " << edgeCount << std::endl;
     }
 };
 
