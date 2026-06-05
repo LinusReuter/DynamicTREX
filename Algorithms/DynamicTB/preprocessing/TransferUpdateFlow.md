@@ -16,14 +16,9 @@
 +--------------------------------------------------+
 | 0) store.add_nodes(maxEventId)                   |
 |                                                  |
-| Phase 0: processRemovedRoutes                    |
+| Phase 0/1: processCancelledTrips                 |
 |  - allowTemporaryInconsistent(true)              |
-|  - clearRouteTransfers(route)                    |
-|  - sync_barrier()                                |
-|                                                  |
-| Phase 1: processCancelledTrips                   |
-|  - allowTemporaryInconsistent(true)              |
-|  - redirectIncomingTransfers(trip)               |
+|  - if nextActiveTrip exists: redirect incoming   |
 |  - clearTripTransfers(trip) (outgoing+incoming)  |
 |  - sync_barrier()                                |
 |                                                  |

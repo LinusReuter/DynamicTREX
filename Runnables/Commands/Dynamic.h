@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <optional>
 #include <string>
 
 #include "../../DataStructures/RAPTOR/Data.h"
@@ -188,6 +189,21 @@ public:
         std::cout << "Loading DynamicTimeTable..." << std::endl;
         DynamicTimeTable::Data dynamicTimeTable(dynamicFile);
         dynamicTimeTable.printInfo();
+        auto queryData = DynamicTimeTable::Algo::DynamicQueryData::buildFromDynamic(dynamicTimeTable);
+
+        std::cout << "Building initial transfer store..." << std::endl;
+        using TransferMeta = DynamicTB::Preprocessing::TransferMeta;
+        using TransferStoreType = TransferStore<PersistentStopEventId, TransferMeta>;
+
+        TransferStoreType store;
+        DynamicTB::Preprocessing::TransferUpdate transferUpdater(store);
+
+        auto start = std::chrono::high_resolution_clock::now();
+        transferUpdater.buildInitialFullTransfers(queryData);
+        auto stop = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+
+        std::cout << "Initial transfer store built in " << duration << std::endl;
 
         DynamicTimeTable::Algo::UpdateSimulator simulator(cfg);
         DynamicTimeTable::Algo::UpdateSimulationStats simStats{};
@@ -199,22 +215,23 @@ public:
         }
 
         std::cout << "Applying updates..." << std::endl;
-        auto start = std::chrono::high_resolution_clock::now();
+        start = std::chrono::high_resolution_clock::now();
         DynamicTimeTable::UpdateStatistics updateStats = DynamicTimeTable::Algo::UpdatePipeline::applyUpdates(dynamicTimeTable, updates);
-        auto stop = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+        auto queryDataUpdated = DynamicTimeTable::Algo::DynamicQueryData::buildFromDynamic(dynamicTimeTable);
+        const DynamicTimeTable::ChangeSummary& changes = dynamicTimeTable.getLatestChanges();
+        transferUpdater.applyFullUpdates(changes, queryDataUpdated);
+        stop = std::chrono::high_resolution_clock::now();
+        duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
 
-        std::cout << "Building DynamicQueryData for validation..." << std::endl;
-        auto queryData = DynamicTimeTable::Algo::DynamicQueryData::buildFromDynamic(dynamicTimeTable);
         std::cout << "Validating DynamicQueryData..." << std::endl;
-        const auto validation = queryData.validate(dynamicTimeTable);
+        const auto validation = queryDataUpdated.validate(dynamicTimeTable);
         if (!validation.first) {
             std::cout << "DynamicQueryData validation failed: " << validation.second << std::endl;
         } else {
             std::cout << "DynamicQueryData validation OK." << std::endl;
         }
 
-        const DynamicTimeTable::ChangeSummary& changes = dynamicTimeTable.getLatestChanges();
+
 
         std::cout << "Update pipeline finished in " << duration << std::endl;
         std::cout << "\nSimulation summary" << std::endl;
@@ -238,7 +255,6 @@ public:
         std::cout << "  Additions: " << updateStats.additions << std::endl;
 
         std::cout << "\nChangeSummary" << std::endl;
-        std::cout << "  Removed routes: " << changes.removedRoutes.size() << std::endl;
         std::cout << "  Cancelled trips: " << changes.cancelledTrips.size() << std::endl;
         std::cout << "  Added trips: " << changes.addedTrips.size() << std::endl;
         std::cout << "  Modified events: " << changes.modifiedEvents.size() << std::endl;

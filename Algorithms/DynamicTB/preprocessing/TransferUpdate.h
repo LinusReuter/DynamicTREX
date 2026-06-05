@@ -92,7 +92,7 @@ public:
 
     /**
      * Incremental FULL-set update pipeline driven by the latest ChangeSummary:
-     * 1) Structural deletions (removed routes + cancelled trips, with redirections)
+     * 1) Structural deletions (cancelled trips, with optional redirections)
      * 2) Outgoing discovery for added trips and modified events
      * 3) Incoming discovery for affected targets (added trips + modified events)
      * 4) Domination cleanup triggered from incoming updates when new transfers are inserted
@@ -104,12 +104,32 @@ public:
      * - Transfers that persist must preserve TransferMeta (isMinimized) unchanged.
      *
      * Store interaction uses temporary inconsistency with phase barriers:
-     * - Phase 0/1: allowTemporaryInconsistent(true) -> clears/redirections -> sync_barrier()
+     * - Phase 0/1: allowTemporaryInconsistent(true) -> redirections + clears -> sync_barrier()
      * - Phase 2: allowTemporaryInconsistent(true) -> outgoing discovery -> sync_barrier()
      * - Phase 3: allowTemporaryInconsistent(true) -> incoming discovery -> sync_barrier()
      */
     void applyFullUpdates(const DynamicTimeTable::ChangeSummary& changes,
-                          const DynamicQueryData& queryData);
+                          const DynamicQueryData& queryData) {
+        queryData_ = &queryData;
+
+        const std::size_t eventCount = queryData_->persistentToFlatEvent.size();
+        if (eventCount == 0) {
+            store_.clear();
+            return;
+        }
+
+        const NodeID maxEventId = NodeID(eventCount - 1);
+        store_.add_nodes(maxEventId);
+
+        store_.allowTemporaryInconsistent(true);
+        processCancelledTrips(changes.cancelledTrips);
+        store_.sync_barrier();
+
+        // TODO Phase 2/3/4: outgoing/incoming discovery
+        store_.allowTemporaryInconsistent(false);
+
+        // TODO minimization
+    }
 
     /**
      * Full rebuild of minimization flags for ALL trips.
@@ -134,14 +154,16 @@ public:
 private:
     // === Full-set phase orchestration ===
 
-    /// Clear all transfers for fully removed routes.
-    void processRemovedRoutes(const std::vector<PersistentRouteId>& routes);
-
     /// Handle trip cancellations:
-    /// 1) Find next feasible trip on the old route (CancelledTripInfo.oldRouteId).
-    /// 2) Redirect incoming transfers to that trip.
-    /// 3) Clear outgoing and incoming transfers of the cancelled trip.
-    void processCancelledTrips(const std::vector<DynamicTimeTable::CancelledTripInfo>& trips);
+    /// 1) Redirect incoming transfers to the next active trip (if any).
+    /// 2) Clear outgoing and incoming transfers of the cancelled trip.
+    void processCancelledTrips(const std::vector<DynamicTimeTable::CancelledTripInfo>& trips) {
+        for (const auto& trip : trips) {
+            if (trip.eventsOfCancelledTrips.empty()) continue;
+            redirectIncomingTransfers(trip);
+            clearTripTransfers(trip.eventsOfCancelledTrips);
+        }
+    }
 
     /// Update transfers for newly added or reinserted trips.
     void processAddedTrips(const std::vector<PersistentTripId>& trips);
@@ -390,15 +412,67 @@ private:
 
     // === Structural removals and redirections ===
 
-    /// Clear all outgoing and incoming transfers for a single trip.
-    void clearTripTransfers(PersistentTripId trip);
+    /// Clear all outgoing and incoming transfers for a list of stop events.
+    void clearTripTransfers(std::span<const PersistentStopEventId> events) {
+        for (const PersistentStopEventId event : events) {
+            clearEventTransfers(event);
+        }
+    }
 
-    /// Clear all transfers for every trip on the route.
-    void clearRouteTransfers(PersistentRouteId route);
-
-    /// Redirect all incoming transfers of a cancelled trip to the next feasible trip (same route).
+    /// Redirect all incoming transfers of a cancelled trip to the next active trip (same route).
     /// Assumes the cancelled trip's incoming edges are still present when called.
-    void redirectIncomingTransfers(const DynamicTimeTable::CancelledTripInfo& trip);
+    void redirectIncomingTransfers(const DynamicTimeTable::CancelledTripInfo& trip) {
+        if (trip.eventsOfCancelledTrips.empty()) return;
+        if (!trip.nextActiveTrip.isValid()) return;
+
+        std::vector<NodeID> sources;
+
+        const PersistentTripId nextTrip = trip.nextActiveTrip;
+        for (std::size_t i = 0; i < trip.eventsOfCancelledTrips.size(); ++i) {
+            const PersistentStopEventId cancelledEvent = trip.eventsOfCancelledTrips[i];
+            const StopIndex stopIndex(static_cast<uint32_t>(i));
+
+            const std::optional<PersistentStopEventId> redirectEvent = eventId(nextTrip, stopIndex);
+            if (!redirectEvent) continue; // will be cleared by clearTripTransfers()
+
+            const auto incoming = store_.incoming_sorted(cancelledEvent);
+            if (incoming.empty()) continue;
+
+            sources.clear();
+            sources.reserve(incoming.size());
+
+            for (const NodeID from : incoming) {
+                sources.push_back(from);
+            }
+
+            auto addBatch = store_.begin_batch(*redirectEvent, Store::Direction::Incoming);
+            for (const NodeID from : sources) {
+                store_.add_incoming_edge(addBatch, from, TransferMeta{false});
+            }
+            store_.commit_batch(addBatch);
+        }
+    }
+
+    /// Clear all transfers for a single stop event (incoming + outgoing).
+    inline void clearEventTransfers(PersistentStopEventId event) {
+        auto out = store_.outgoing_sorted(event);
+        if (!out.empty()) {
+            auto batch = store_.begin_batch(event, Store::Direction::Outgoing);
+            for (const auto& edge : out) {
+                store_.remove_outgoing_edge(batch, edge.to);
+            }
+            store_.commit_batch(batch);
+        }
+
+        auto in = store_.incoming_sorted(event);
+        if (!in.empty()) {
+            auto batch = store_.begin_batch(event, Store::Direction::Incoming);
+            for (const auto from : in) {
+                store_.remove_incoming_edge(batch, from);
+            }
+            store_.commit_batch(batch);
+        }
+    }
 
     /// Compute redirection target for a specific transfer source.
     std::optional<PersistentTripId> findNextFeasibleTripOnRoute(PersistentTripId sourceTrip,

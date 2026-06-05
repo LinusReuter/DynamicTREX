@@ -33,6 +33,7 @@ struct UpdatePipeline {
         enforceFifo(data, context);
         stats += processInsertions(data, updates, context);
 
+        finalizeChangeSummary(data, context);
         data.latestChanges_ = std::move(context.summary);
 
         return stats;
@@ -57,6 +58,8 @@ private:
             }
 
             const PersistentRouteId oldRoute = trip.route;
+            std::vector<PersistentStopEventId> activeEvents = collectActiveEvents(data, tripId);
+
             trip.isActive = false;
 
             if (data.isRoute(oldRoute)) {
@@ -65,7 +68,8 @@ private:
                 list.erase(std::remove(list.begin(), list.end(), tripId), list.end());
             }
 
-            context.summary.cancelledTrips.push_back({tripId, oldRoute});
+            context.summary.cancelledTrips.push_back(
+                makeCancelledTripInfo(tripId, oldRoute, std::move(activeEvents)));
             stats.successfulUpdates++;
         }
 
@@ -91,6 +95,32 @@ private:
 
             bool structural = false;
             bool delayedArrivals = false;
+            std::vector<PersistentStopEventId> preActiveEvents;
+
+            // Pre-scan to detect structural changes before mutating skip flags.
+            for (const StopModification& m : mods) {
+                const std::size_t idx = static_cast<std::size_t>(m.stopIndex);
+                if (idx >= trip.numberOfEvents) {
+                    structural = true;
+                    continue;
+                }
+
+                const std::size_t first = static_cast<std::size_t>(trip.firstEvent);
+                const PersistentStopEventId eventId(first + idx);
+                if (!data.isEvent(eventId)) {
+                    structural = true;
+                    continue;
+                }
+
+                const PersistentStopEvent& e = data.events_[eventId];
+                if (m.isSkipped != e.isSkipped) {
+                    structural = true;
+                }
+            }
+
+            if (structural) {
+                preActiveEvents = collectActiveEvents(data, tripId);
+            }
 
             for (const StopModification& m : mods) {
                 const std::size_t idx = static_cast<std::size_t>(m.stopIndex);
@@ -130,7 +160,7 @@ private:
             }
 
             if (structural) {
-                extractTrip(data, tripId, context);
+                extractTrip(data, tripId, context, std::move(preActiveEvents));
             } else {
                 context.modifiedTripsByRoute[trip.route].push_back(tripId);
                 stats.successfulUpdates++;
@@ -204,7 +234,8 @@ private:
 
                 if (maxDegree == 0) break;
 
-                extractTrip(data, worstTrip, context);
+                std::vector<PersistentStopEventId> preActiveEvents = collectActiveEvents(data, worstTrip);
+                extractTrip(data, worstTrip, context, std::move(preActiveEvents));
 
                 // The trip was removed from routes_[routeId].trips inside extractTrip.
                 // Now clean up the localized violation graph.
@@ -279,7 +310,8 @@ private:
         return stats;
     }
 
-    static void extractTrip(Data& data, const PersistentTripId tripId, UpdateContext& context) {
+    static void extractTrip(Data& data, const PersistentTripId tripId, UpdateContext& context,
+                            std::vector<PersistentStopEventId>&& preActiveEvents) {
         PersistentTrip& trip = data.trips_[tripId];
         const PersistentRouteId oldRoute = trip.route;
 
@@ -288,8 +320,55 @@ private:
             list.erase(std::remove(list.begin(), list.end(), tripId), list.end());
         }
 
-        context.summary.cancelledTrips.push_back({tripId, oldRoute});
+        context.summary.cancelledTrips.push_back(
+            makeCancelledTripInfo(tripId, oldRoute, std::move(preActiveEvents)));
         context.extractionQueue.push_back(tripId);
+    }
+
+    static CancelledTripInfo makeCancelledTripInfo(const PersistentTripId tripId,
+                                                   const PersistentRouteId oldRoute,
+                                                   std::vector<PersistentStopEventId>&& activeEvents) {
+        CancelledTripInfo info;
+        info.tripId = tripId;
+        info.oldRouteId = oldRoute;
+        info.eventsOfCancelledTrips = std::move(activeEvents);
+        return info;
+    }
+
+    static std::vector<PersistentStopEventId> collectActiveEvents(const Data& data, const PersistentTripId tripId) {
+        const PersistentTrip& trip = data.trips_[tripId];
+        std::vector<PersistentStopEventId> events;
+        events.reserve(trip.numberOfEvents);
+
+        const std::size_t first = static_cast<std::size_t>(trip.firstEvent);
+        for (std::uint32_t i = 0; i < trip.numberOfEvents; ++i) {
+            const PersistentStopEventId eventId(first + i);
+            if (data.events_[eventId].isSkipped) continue;
+            events.push_back(eventId);
+        }
+
+        return events;
+    }
+
+    static void finalizeChangeSummary(Data& data, UpdateContext& context) {
+        if (context.summary.cancelledTrips.empty()) return;
+
+        for (CancelledTripInfo& info : context.summary.cancelledTrips) {
+            info.nextActiveTrip = noPersistentTripId;
+            if (!data.isRoute(info.oldRouteId)) continue;
+
+            const auto& list = data.routes_[info.oldRouteId].trips;
+            if (list.empty()) continue;
+
+            const Time refDep = getFirstDepartureTime(data, info.tripId);
+            auto it = std::lower_bound(list.begin(), list.end(), refDep,
+                                       [&data](PersistentTripId t, Time dep) {
+                                           return getFirstDepartureTime(data, t) < dep;
+                                       });
+            if (it != list.end()) {
+                info.nextActiveTrip = *it;
+            }
+        }
     }
 
     static PersistentRouteId findCompatibleRoute(Data& data, const std::vector<StopId>& stopSequence,

@@ -39,17 +39,21 @@ struct PendingUpdates {
 struct CancelledTripInfo {
     PersistentTripId tripId;
     PersistentRouteId oldRouteId;  // Essential for transfer phase redirection/cleanup
+
+    // Next active trip on the old route (chronological). If invalid, no redirection is possible.
+    PersistentTripId nextActiveTrip = noPersistentTripId;
+
+    // Snapshot of previously ACTIVE stop events (non-skipped), in stop-index order.
+    // The index in this vector corresponds to the stop index used by transfer updates.
+    std::vector<PersistentStopEventId> eventsOfCancelledTrips;
 };
 
 struct ChangeSummary {
-    // PHASE 0: Complete Route Removals
-    // Transfer stage deletes all edges pointing to or from these Routes.
-    std::vector<PersistentRouteId> removedRoutes;
-
-    // PHASE 1: Trip Cancellations & Extractions
+    // PHASE 0/1: Trip Cancellations & Extractions
     // Transfer stage treats these as removed from their old route context.
     // (This includes trips that were permanently cancelled AND trips that were
     // extracted due to a skipped stop or FIFO violation).
+    // If nextActiveTrip is valid, redirect incoming transfers; otherwise delete.
     std::vector<CancelledTripInfo> cancelledTrips;
 
     // PHASE 2 & 3: Discovery Triggers - New Additions
@@ -68,7 +72,6 @@ struct ChangeSummary {
     std::vector<PersistentTripId> tripsWithDelayedArrivals;
 
     void clear() {
-        removedRoutes.clear();
         cancelledTrips.clear();
         addedTrips.clear();
         modifiedEvents.clear();
@@ -76,7 +79,7 @@ struct ChangeSummary {
     }
 
     bool hasStructuralChanges() const {
-        return !removedRoutes.empty() || !cancelledTrips.empty() || !addedTrips.empty() || !modifiedEvents.empty() ||
+        return !cancelledTrips.empty() || !addedTrips.empty() || !modifiedEvents.empty() ||
                !tripsWithDelayedArrivals.empty();
     }
 };
