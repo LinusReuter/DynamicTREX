@@ -53,6 +53,8 @@ endif
 
 # Basic flags
 FLAGS = -std=c++2b -pipe
+PROJECT_ROOT := $(shell pwd)/..
+FLAGS += -I$(PROJECT_ROOT)
 ifneq ($(HOMEBREW_PREFIX),)
   FLAGS += -I$(HOMEBREW_PREFIX)/include -L$(HOMEBREW_PREFIX)/lib
 endif
