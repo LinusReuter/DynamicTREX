@@ -25,6 +25,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #pragma once
 
 #include "../../../Helpers/Types.h"
+#include "../../../DataStructures/TripBased/Data.h"
 
 namespace TripBased {
 /*
@@ -282,10 +283,88 @@ struct Transfers {
             labels[edge].init(event, trip, firstEvent);
         }
     }
+    Transfers(std::vector<Edge> beginOut, std::vector<EdgeLabel> labels, std::vector<int> travelTime) noexcept
+        : beginOut(std::move(beginOut)), labels(std::move(labels)), travelTime(std::move(travelTime)) {}
 
     std::vector<Edge> beginOut;
     std::vector<EdgeLabel> labels;
     std::vector<int> travelTime;
 };
+
+// A lightweight structure representing a directional topological edge
+struct SimpleEdge {
+    uint32_t from;
+    uint32_t to;
+
+    // Standard operators to allow sorting and unique comparison
+    bool operator<(const SimpleEdge& fire) const {
+        return std::tie(from, to) < std::tie(fire.from, fire.to);
+    }
+
+    bool operator==(const SimpleEdge& fire) const {
+        return std::tie(from, to) == std::tie(fire.from, fire.to);
+    }
+};
+
+// Holds the descriptive delta between the two sets
+struct TransferComparisonResult {
+    std::vector<SimpleEdge> onlyInFirst;
+    std::vector<SimpleEdge> onlyInSecond;
+
+    bool areEqual() const { return onlyInFirst.empty() && onlyInSecond.empty(); }
+    bool isFirstSuperset() const { return !onlyInFirst.empty() && onlyInSecond.empty(); }
+    bool isSecondSuperset() const { return onlyInFirst.empty() && !onlyInSecond.empty(); }
+};
+
+/**
+ * Helper function to unpack the CSR (Compressed Sparse Row) representation
+ * into a sorted list of unique topological edges.
+ */
+inline std::vector<SimpleEdge> extractTopology(const Transfers& transfers) {
+    std::vector<SimpleEdge> edges;
+    if (transfers.beginOut.empty()) return edges;
+
+    // The number of source vertices is beginOut.size() - 1
+    for (size_t fromVertex = 0; fromVertex < transfers.beginOut.size() - 1; ++fromVertex) {
+        size_t edgeBegin = transfers.beginOut[fromVertex];
+        size_t edgeEnd = transfers.beginOut[fromVertex + 1];
+
+        for (size_t edgeIdx = edgeBegin; edgeIdx < edgeEnd; ++edgeIdx) {
+            // Guard against potential out-of-bounds if building custom/malformed data
+            if (edgeIdx < transfers.labels.size()) {
+                uint32_t toVertex = static_cast<uint32_t>(transfers.labels[edgeIdx].getStopEvent());
+                edges.push_back({static_cast<uint32_t>(fromVertex), toVertex});
+            }
+        }
+    }
+
+    // Sort to enable linear-time set operations
+    std::sort(edges.begin(), edges.end());
+    // edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+    return edges;
+}
+
+/**
+ * Compares two Transfers instances purely by their network topology.
+ * Returns lists of edges unique to either the first or second instance.
+ */
+inline TransferComparisonResult compareTransfers(const Transfers& lhs, const Transfers& rhs) {
+    std::vector<SimpleEdge> lhsEdges = extractTopology(lhs);
+    std::vector<SimpleEdge> rhsEdges = extractTopology(rhs);
+
+    TransferComparisonResult result;
+
+    // Find edges that exist ONLY in the first transfer set
+    std::set_difference(lhsEdges.begin(), lhsEdges.end(),
+                        rhsEdges.begin(), rhsEdges.end(),
+                        std::back_inserter(result.onlyInFirst));
+
+    // Find edges that exist ONLY in the second transfer set
+    std::set_difference(rhsEdges.begin(), rhsEdges.end(),
+                        lhsEdges.begin(), lhsEdges.end(),
+                        std::back_inserter(result.onlyInSecond));
+
+    return result;
+}
 
 }  // namespace TripBased
