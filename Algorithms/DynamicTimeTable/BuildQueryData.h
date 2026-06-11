@@ -53,6 +53,19 @@ struct DynamicQueryData {
         return Time(queryData.eventDepTimes[event]);
     }
 
+    inline std::vector<PersistentStopEventId> getEventsOfTrip(const PersistentTripId pTrip) const noexcept {
+        TripId trip = persistentToFlatTrip[pTrip];
+        std::vector<PersistentStopEventId> pEvents;
+        if (trip == noTripId) return pEvents;
+        StopEventId first = queryData.firstStopEventOfTrip[trip];
+        StopEventId limit = queryData.firstStopEventOfTrip[trip + 1];
+        pEvents.reserve(limit - first);
+        for (StopEventId event = first; event < limit; ++event) {
+            pEvents.emplace_back(flatToPersistentEvent[event]);
+        }
+        return pEvents;
+    }
+
     std::pair<bool, std::string> validate(const DynamicTimeTable::Data& data) const {
         std::stringstream error_msg;
         const auto& qd = queryData;
