@@ -159,6 +159,75 @@ public:
      */
     void updateMinimizedTransfers(const std::vector<PersistentTripId>& trips, const DynamicQueryData& queryData);
 
+
+        // === Transfer Set Export ===
+
+    /// Export the current FULL transfer set in the compact TripBased query layout.
+    ///
+    /// The exported graph uses flat stop-event ids as vertices, matching
+    /// TripBased::Transfers. Persistent ids from the dynamic store are translated
+    /// through DynamicQueryData. Invalid/removed persistent events are skipped.
+    [[nodiscard]] TripBased::Transfers exportFullTransfers(const DynamicQueryData& queryData) const {
+        const auto& qd = queryData.queryData;
+        const std::size_t flatEventCount = qd.eventLookup.size();
+
+        std::vector<Edge> beginOut(flatEventCount + 1, Edge(0));
+
+        for (std::size_t pFrom = 0; pFrom < queryData.persistentToFlatEvent.size(); ++pFrom) {
+            const StopEventId flatFrom = queryData.persistentToFlatEvent[pFrom];
+            if (flatFrom == noStopEvent) continue;
+
+            std::size_t validOutgoing = 0;
+            for (const auto& [to, meta] : store_.outgoing_sorted(NodeID(pFrom))) {
+                const NodeID pTo = to;
+                if (static_cast<std::size_t>(pTo) >= queryData.persistentToFlatEvent.size()) continue;
+
+                if (const StopEventId flatTo = queryData.persistentToFlatEvent[pTo]; flatTo == noStopEvent) continue;
+
+                ++validOutgoing;
+            }
+
+            beginOut[static_cast<std::size_t>(flatFrom) + 1] = Edge(validOutgoing);
+        }
+
+        for (std::size_t i = 1; i < beginOut.size(); ++i) {
+            beginOut[i] = Edge(beginOut[i] + beginOut[i - 1]);
+        }
+
+        const std::size_t edgeCount = beginOut.back();
+        std::vector<TripBased::EdgeLabel> labels(edgeCount);
+        std::vector<int> travelTime(edgeCount);
+
+        std::vector<Edge> nextEdge = beginOut;
+
+        for (std::size_t pFrom = 0; pFrom < queryData.persistentToFlatEvent.size(); ++pFrom) {
+            const StopEventId flatFrom = queryData.persistentToFlatEvent[pFrom];
+            if (flatFrom == noStopEvent) continue;
+
+            const Time fromArrivalTime = Time(qd.eventArrTimes[flatFrom]);
+
+            for (const auto& [to, meta] : store_.outgoing_sorted(NodeID(pFrom))) {
+                const NodeID pTo = to;
+                if (static_cast<std::size_t>(pTo) >= queryData.persistentToFlatEvent.size()) continue;
+
+                const StopEventId flatTo = queryData.persistentToFlatEvent[pTo];
+                if (flatTo == noStopEvent) continue;
+
+                const Edge exportEdge = nextEdge[flatFrom]++;
+                const TripId trip = qd.tripOfStopEvent[flatTo];
+                const StopEventId firstEvent = qd.firstStopEventOfTrip[trip];
+
+                labels[exportEdge].init(flatTo, trip, firstEvent);
+                travelTime[exportEdge] = static_cast<int>(Time(qd.eventDepTimes[flatTo]) - fromArrivalTime);
+            }
+        }
+
+        return {std::move(beginOut), std::move(labels), std::move(travelTime)};
+    }
+
+    // Export Minimized Transfers
+
+
 private:
     // === Full-set phase orchestration ===
 
