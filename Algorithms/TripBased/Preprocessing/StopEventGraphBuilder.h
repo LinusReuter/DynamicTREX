@@ -68,14 +68,18 @@ private:
     };
 
 public:
-    StopEventGraphBuilder(const TripBased::Data& data) : data(data), labels(data.numberOfStops()), timestamp(0) {
+    StopEventGraphBuilder(const TripBased::Data& data, const bool clearGeneratedTransfers = true)
+        : data(data),
+          clearGeneratedTransfers(clearGeneratedTransfers),
+          labels(data.numberOfStops()),
+          timestamp(0) {
         generatedTransfers.addVertices(data.numberOfStopEvents());
         keptTransfers.addVertices(data.numberOfStopEvents());
     }
 
 public:
     inline void generateRouteBasedTransfers(const RouteId fromRoute) noexcept {
-        if (generatedTransfers.numEdges() > 1000000) {
+        if (clearGeneratedTransfers && generatedTransfers.numEdges() > 1000000) {
             generatedTransfers.clear();
             generatedTransfers.addVertices(data.numberOfStopEvents());
         }
@@ -106,7 +110,7 @@ public:
     }
 
     inline void generateFullTransfers(const TripId trip) noexcept {
-        if (generatedTransfers.numEdges() > 1000000) {
+        if (clearGeneratedTransfers && generatedTransfers.numEdges() > 1000000) {
             generatedTransfers.clear();
             generatedTransfers.addVertices(data.numberOfStopEvents());
         }
@@ -247,6 +251,7 @@ private:
 
 private:
     const TripBased::Data& data;
+    bool clearGeneratedTransfers;
 
     SimpleDynamicGraph generatedTransfers;
     SimpleDynamicGraph keptTransfers;
@@ -369,6 +374,22 @@ inline void ComputeStopEventGraphRouteBased(TripBased::Data& data, const int num
 
     Graph::move(std::move(stopEventGraph), data.stopEventGraph);
     data.stopEventGraph.sortEdges(ToVertex);
+    progress.finished();
+}
+
+inline void ComputeFullStopEventGraph(TripBased::Data& data) noexcept {
+    Progress progress(data.numberOfTrips());
+
+    StopEventGraphBuilder builder(data, false);
+
+    for (const TripId trip : data.trips()) {
+        builder.generateFullTransfers(trip);
+        progress++;
+    }
+
+    Graph::move(std::move(builder.getGeneratedStopEventGraph()), data.stopEventGraph);
+    data.stopEventGraph.sortEdges(ToVertex);
+
     progress.finished();
 }
 
