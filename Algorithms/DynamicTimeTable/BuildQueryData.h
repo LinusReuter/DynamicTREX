@@ -146,13 +146,12 @@ struct DynamicQueryData {
             return {false, error_msg.str()};
         }
 
-        const bool hasTripSentinel = qd.firstStopEventOfTrip.size() == numTrips + 1;
-        if (!hasTripSentinel && qd.firstStopEventOfTrip.size() != numTrips) {
+        if (qd.firstStopEventOfTrip.size() != numTrips + 1) {
             error_msg << "firstStopEventOfTrip size mismatch: have " << qd.firstStopEventOfTrip.size()
-                      << ", expected " << numTrips << " or " << (numTrips + 1);
+                      << ", expected " << (numTrips + 1) << " (sentinel element required for boundary queries)";
             return {false, error_msg.str()};
         }
-        if (hasTripSentinel && static_cast<size_t>(qd.firstStopEventOfTrip[numTrips]) != numEvents) {
+        if (static_cast<size_t>(qd.firstStopEventOfTrip[numTrips]) != numEvents) {
             error_msg << "firstStopEventOfTrip sentinel mismatch: got " << qd.firstStopEventOfTrip[numTrips]
                       << ", expected " << numEvents;
             return {false, error_msg.str()};
@@ -271,8 +270,7 @@ struct DynamicQueryData {
             const size_t numStopsOnRoute = stopSeqEnd - stopSeqStart;
 
             const size_t tripStartEvent = static_cast<size_t>(qd.firstStopEventOfTrip[tIdx]);
-            const size_t tripEndEvent =
-                hasTripSentinel ? static_cast<size_t>(qd.firstStopEventOfTrip[tIdx + 1]) : tripStartEvent + numStopsOnRoute;
+            const size_t tripEndEvent = static_cast<size_t>(qd.firstStopEventOfTrip[tIdx + 1]);
 
             if (tripEndEvent > numEvents) {
                 error_msg << "Trip " << tIdx << " stop-event range exceeds number of events";
@@ -415,8 +413,7 @@ struct DynamicQueryData {
             if (numStopsOnRoute == 0) continue;
 
             const size_t tripStartEvent = static_cast<size_t>(qd.firstStopEventOfTrip[tIdx]);
-            const size_t tripEndEvent =
-                hasTripSentinel ? static_cast<size_t>(qd.firstStopEventOfTrip[tIdx + 1]) : tripStartEvent + numStopsOnRoute;
+            const size_t tripEndEvent = static_cast<size_t>(qd.firstStopEventOfTrip[tIdx + 1]);
             if (tripEndEvent - tripStartEvent != numStopsOnRoute) {
                 error_msg << "Trip " << tIdx << " stop-event count mismatch: expected " << numStopsOnRoute
                           << ", got " << (tripEndEvent - tripStartEvent);
@@ -584,7 +581,7 @@ struct DynamicQueryData {
 
         builder.tripOfStopEvent.resize(activeEventCount);
         builder.routeOfTrip.resize(activeTripCount);
-        builder.firstStopEventOfTrip.resize(activeTripCount);
+        builder.firstStopEventOfTrip.resize(activeTripCount + 1);
         builder.firstTripOfRoute.resize(activeRouteCount + 1);
 
         builder.firstStopIdOfRoute.resize(activeRouteCount + 1);
@@ -665,6 +662,7 @@ struct DynamicQueryData {
         // Set final sentinel bounds natively outside the loop
         builder.firstTripOfRoute[activeRouteCount] = TripId(activeTripCount);
         builder.firstStopIdOfRoute[activeRouteCount] = activeStopSequenceLength;
+        builder.firstStopEventOfTrip[activeTripCount] = StopEventId(activeEventCount);
 
         // 4. Rebuild routeSegments
         const size_t numStops = data.numberOfStops();
