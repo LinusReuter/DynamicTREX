@@ -17,6 +17,7 @@ int main(int argc, char** argv) {
     new BuildDynamicQueryData(shell);
     new BuildInitialTransferStore(shell);
     new SimulateDynamicUpdates(shell);
+    new SimulateAndCompareTransferUpdates(shell);
 
     shell.run();
     return 0;

@@ -4,9 +4,10 @@
 #include <string>
 #include <utility>
 
-#include "../TripBased/Query/Types.h"
+
 #include "../../DataStructures/DynamicTimeTable/Data.h"
 #include "../../Helpers/Types.h"
+#include "../TripBased/Query/Types.h"
 
 namespace DynamicTimeTable {
 namespace Algo {
