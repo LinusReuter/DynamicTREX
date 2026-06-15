@@ -561,46 +561,34 @@ private:
         auto batch = store_.begin_batch(toEvent, Store::Direction::Incoming);
 
         auto current_span = store_.incoming_sorted(toEvent);
-
         auto curr_it = current_span.begin();
         auto des_it = desired.begin();
+
+        // 1. Create a buffer to track new edges requiring cleanup
+        std::vector<PersistentStopEventId> newlyInserted;
 
         while (curr_it != current_span.end() && des_it != desired.end()) {
             PersistentStopEventId currentFrom = *curr_it;
             PersistentStopEventId desiredFrom = *des_it;
 
             if (currentFrom < desiredFrom) {
-                // Edge is in current but not desired -> Remove it
-                // TransferMeta meta = store_.readEdgeMeta(currentFrom, toEvent);
                 store_.remove_incoming_edge(batch, currentFrom);
-
-                // if (meta.isMinimized) {
-                //     StopEventId flatFromEvent = queryData_->persistentToFlatEvent[currentFrom];
-                //     TripId flatFromTrip = queryData_->queryData.tripOfStopEvent[flatFromEvent];
-                //     PersistentTripId pFromTrip = queryData_->flatToPersistentTrip[flatFromTrip];
-                //     // TODO: Mark source trip (pFromTrip) for re-minimization
-                // }
                 ++curr_it;
             } else if (currentFrom > desiredFrom) {
-                // Edge is desired but does not exist -> Insert it
                 store_.add_incoming_edge(batch, desiredFrom, TransferMeta{false});
 
-                // Trigger domination cleanup on the target line
-                dominationCleanupForInsertedTransfer(desiredFrom, toEvent);
+                // 2. Track the insertion instead of calling dominationCleanup immediately
+                newlyInserted.push_back(desiredFrom);
                 ++des_it;
             } else {
-                // Edge matches both -> Keep it unchanged (preserves its TransferMeta flags)
                 ++curr_it;
                 ++des_it;
             }
         }
 
-        // Clean up any remaining trailing old edges
         while (curr_it != current_span.end()) {
-            PersistentStopEventId currentFrom = *curr_it;
             // TransferMeta meta = store_.readEdgeMeta(currentFrom, toEvent);
-            store_.remove_incoming_edge(batch, currentFrom);
-
+            store_.remove_incoming_edge(batch, *curr_it);
             // if (meta.isMinimized) {
             //     StopEventId flatFromEvent = queryData_->persistentToFlatEvent[currentFrom];
             //     TripId flatFromTrip = queryData_->queryData.tripOfStopEvent[flatFromEvent];
@@ -610,16 +598,19 @@ private:
             ++curr_it;
         }
 
-        // Append any remaining desired new edges
         while (des_it != desired.end()) {
-            PersistentStopEventId desiredFrom = *des_it;
-            store_.add_incoming_edge(batch, desiredFrom, TransferMeta{false});
-
-            dominationCleanupForInsertedTransfer(desiredFrom, toEvent);
+            store_.add_incoming_edge(batch, *des_it, TransferMeta{false});
+            newlyInserted.push_back(*des_it);
             ++des_it;
         }
 
+        // 3. Safely commit all incoming operations first
         store_.commit_batch(batch);
+
+        // 4. Safely execute the nested outgoing batches for cleanup
+        for (const auto& fromEvent : newlyInserted) {
+            dominationCleanupForInsertedTransfer(fromEvent, toEvent);
+        }
     }
 
     // === Structural removals and redirections ===
