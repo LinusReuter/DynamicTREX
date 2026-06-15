@@ -51,13 +51,13 @@ public:
     /// Contract: sorted by `to`, unique, and stable until commit_batch() for
     /// the same node + direction (Outgoing). Opposite-direction maintenance
     /// may update other nodes concurrently (no cross-direction stability guarantee).
-    virtual outgoing_span outgoing_sorted(NodeID from) const = 0;
+    virtual outgoing_span outgoing_sorted(NodeID from) = 0;
 
     /// Incoming adjacency view for `to` (read-only sources only).
     /// Contract: sorted, unique, and stable until commit_batch() for
     /// the same node + direction (Incoming). Opposite-direction maintenance
     /// may update other nodes concurrently (no cross-direction stability guarantee).
-    virtual incoming_span incoming_sorted(NodeID to) const = 0;
+    virtual incoming_span incoming_sorted(NodeID to) = 0;
 
     // === Edge operations (non-batch) ===
 

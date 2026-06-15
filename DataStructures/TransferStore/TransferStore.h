@@ -82,7 +82,7 @@ private:
 
         std::size_t adds = 0;
         for (const auto& op : ops) {
-            adds = (op.add) ? adds++ : adds--;
+            (op.add) ? ++adds : --adds;
         }
 
         auto& storage = out_[node];
@@ -111,7 +111,7 @@ private:
 
         std::size_t adds = 0;
         for (const auto& op : ops) {
-            adds = (op.add) ? adds++ : adds--;
+            (op.add) ? ++adds : --adds;
         }
 
         auto& storage = in_[node];
@@ -180,35 +180,25 @@ public:
     }
 
     // --- Explicit Sorting Methods ---
-    void sort_outgoing(const NodeID from) const {
-        auto span = out_[from];
-
-        // Get non-const pointers to the underlying data
-        auto* first = const_cast<OutEdge*>(span.data());
-        auto* last = first + span.size();
-
-        std::sort(first, last, [](const OutEdge& a, const OutEdge& b) {
+    void sort_outgoing(const NodeID from) {
+        OutStorage& storage = out_[from];
+        std::sort(storage.begin(), storage.end(), [](OutEdge& a, OutEdge& b) {
             return a.to < b.to;
         });
     }
 
-    void sort_incoming(const NodeID to) const {
-        auto span = in_[to];
-
-        // Get non-const pointers to the underlying data
-        auto* first = const_cast<NodeID*>(span.data());
-        auto* last = first + span.size();
-
-        std::sort(first, last);
+    void sort_incoming(const NodeID to) {
+        InStorage& storage = in_[to];
+        std::sort(storage.begin(), storage.end());
     }
 
     // Spans are now inherently unordered unless explicit sort is called
-    outgoing_span outgoing_sorted(const NodeID from) const override {
+    outgoing_span outgoing_sorted(const NodeID from) override {
         sort_outgoing(from);
         return {out_[from].data(), out_[from].size()};
     }
 
-    incoming_span incoming_sorted(const NodeID to) const override {
+    incoming_span incoming_sorted(const NodeID to) override {
         sort_incoming(to);
         return {in_[to].data(), in_[to].size()};
     }
