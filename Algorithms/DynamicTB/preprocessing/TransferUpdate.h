@@ -132,6 +132,7 @@ public:
         store_.sync_barrier();
 
         // Incoming Phase
+        // #TODO: When updates cause earlier departure incoming discovey on pedecessor event needed?
         processAddedTripsIncoming(changes.addedTrips);
         processEventsIncoming(changes.modifiedEvents);
         store_.sync_barrier();
@@ -446,6 +447,9 @@ private:
         });
 
         for (const auto& src : sources) {
+            if (src.i == StopIndex(0)) {
+                continue;
+            }
             int64_t maxArr = static_cast<int64_t>(toDepTime) - static_cast<int64_t>(src.footPathTime);
             int64_t minArr = (prevDepTime != noTime)
                                  ? static_cast<int64_t>(prevDepTime) - static_cast<int64_t>(src.footPathTime)
@@ -745,6 +749,7 @@ private:
 
         TripId flatToTrip = queryData_->queryData.tripOfStopEvent[flatToEvent];
         RouteId toRoute = queryData_->queryData.routeOfTrip[flatToTrip];
+        StopIndex toIndex = stopIndexOfEvent(toEvent);
 
         // // Resolve the source trip in case we need to mark it for re-minimization
         // StopEventId flatFromEvent = queryData_->persistentToFlatEvent[fromEvent];
@@ -764,16 +769,15 @@ private:
             RouteId u2Route = queryData_->queryData.routeOfTrip[flatU2Trip];
 
             if (u2Route == toRoute) {
+                StopIndex u2Index = stopIndexOfEvent(u2Event);
                 bool isDominated = false;
 
                 // 1. Temporal Pruning (ALWAYS ON)
-                // If the existing edge goes to a strictly later trip on the same route,
-                // it is universally dominated by the newly discovered earlier trip.
-                if (flatU2Trip > flatToTrip) {
+                // Existing edge is only dominated if it goes to a later trip AT THE SAME STOP INDEX
+                if (u2Index == toIndex && flatU2Trip > flatToTrip) {
                     isDominated = true;
                 }
                 // 2. Spatial Pruning (OPTIONAL)
-                // If the existing edge goes to the exact SAME trip but at a later stop index.
                 else if constexpr (kEnableSpacialPruning) {
                     if (flatU2Trip == flatToTrip && flatU2Event > flatToEvent) {
                         isDominated = true;
