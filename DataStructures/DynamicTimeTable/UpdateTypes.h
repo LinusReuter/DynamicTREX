@@ -40,9 +40,6 @@ struct CancelledTripInfo {
     PersistentTripId tripId;
     PersistentRouteId oldRouteId;  // Essential for transfer phase redirection/cleanup
 
-    // Next active trip on the old route (chronological). If invalid, no redirection is possible.
-    PersistentTripId nextActiveTrip = noPersistentTripId;
-
     // Snapshot of previously ACTIVE stop events (non-skipped), in stop-index order.
     // The index in this vector corresponds to the stop index used by transfer updates.
     std::vector<PersistentStopEventId> eventsOfCancelledTrips;

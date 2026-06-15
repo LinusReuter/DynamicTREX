@@ -159,8 +159,7 @@ public:
      */
     void updateMinimizedTransfers(const std::vector<PersistentTripId>& trips, const DynamicQueryData& queryData);
 
-
-        // === Transfer Set Export ===
+    // === Transfer Set Export ===
 
     /// Export the current FULL transfer set in the compact TripBased query layout.
     ///
@@ -226,7 +225,6 @@ public:
     }
 
     // Export Minimized Transfers
-
 
 private:
     // === Full-set phase orchestration ===
@@ -633,38 +631,80 @@ private:
         }
     }
 
-    /// Redirect all incoming transfers of a cancelled trip to the next active trip (same route).
+    /// Redirect all incoming transfers of a cancelled trip to the next feasible active trip of the route.
     /// Assumes the cancelled trip's incoming edges are still present when called.
     void redirectIncomingTransfers(const DynamicTimeTable::CancelledTripInfo& trip) const {
         if (trip.eventsOfCancelledTrips.empty()) return;
-        if (!trip.nextActiveTrip.isValid()) return;
 
-        std::vector<NodeID> sources;
+        RouteId targetRoute = queryData_->persistentToFlatRoute[trip.oldRouteId];
+        if (targetRoute == noRouteId) return;
 
-        const PersistentTripId nextTrip = trip.nextActiveTrip;
         for (std::size_t i = 0; i < trip.eventsOfCancelledTrips.size(); ++i) {
             const PersistentStopEventId cancelledEvent = trip.eventsOfCancelledTrips[i];
             const StopIndex stopIndex(static_cast<uint32_t>(i));
 
-            const std::optional<PersistentStopEventId> redirectEvent = eventId(nextTrip, stopIndex);
-            if (!redirectEvent) continue;  // will be cleared by clearTripTransfers()
-
             const auto incoming = store_.incoming_sorted(cancelledEvent);
             if (incoming.empty()) continue;
 
-            sources.clear();
-            sources.reserve(incoming.size());
-
             for (const NodeID from : incoming) {
-                sources.push_back(from);
-            }
+                StopEventId flatFromEvent = queryData_->persistentToFlatEvent[from];
+                if (flatFromEvent == noStopEvent) continue;
 
-            auto addBatch = store_.begin_batch(*redirectEvent, Store::Direction::Incoming);
-            for (const NodeID from : sources) {
-                store_.add_incoming_edge(addBatch, from, TransferMeta{false});
+                // 1. Calculate transfer window
+                Time arrTime = arrivalTimeOfEvent(from);
+                StopId fromStop = stopOfEvent(from);
+
+                // Reconstruct the StopId of the cancelled event for this index
+                StopId targetStop =
+                    queryData_->queryData
+                        .routeStopSequences[queryData_->queryData.firstStopIdOfRoute[targetRoute] + stopIndex];
+
+                // Compute minimum departure (Arrival + Transfer duration)
+                Time transferTime = getTransferDuration(fromStop, targetStop);
+                if (transferTime == noTime) continue;
+                Time minDepTime = arrTime + transferTime;
+
+                // 2. Discover the true earliest feasible trip on the original route
+                // This replaces the reliance on nextActiveTrip.
+                std::optional<TripId> optTargetTrip = findEarliestTripOnRoute(targetRoute, stopIndex, minDepTime);
+                if (!optTargetTrip) continue;
+
+                TripId targetTrip = *optTargetTrip;
+                TripId flatFromTrip = queryData_->queryData.tripOfStopEvent[flatFromEvent];
+                RouteId fromRoute = queryData_->queryData.routeOfTrip[flatFromTrip];
+
+                StopIndex fromIndex = stopIndexOfEvent(from);
+
+                // 1. Same-route forward check (Strictly mirrors computeOutgoingTransfers)
+                if (fromRoute == targetRoute && targetTrip >= flatFromTrip && stopIndex >= fromIndex) {
+                    continue;
+                }
+
+                // 2. U-Turn prevention (Strictly mirrors computeOutgoingTransfers)
+                if (isUTurn(flatFromTrip, fromIndex, targetTrip, stopIndex)) {
+                    continue;
+                }
+
+                // 3. Map back to persistent space
+                PersistentTripId pTargetTrip = queryData_->flatToPersistentTrip[targetTrip];
+                std::optional<PersistentStopEventId> redirectEvent = eventId(pTargetTrip, stopIndex);
+
+                if (redirectEvent) {
+                    store_.add_edge(from, *redirectEvent, TransferMeta{false});
+                }
             }
-            store_.commit_batch(addBatch);
         }
+    }
+
+    [[nodiscard]] inline  Time getTransferDuration(const StopId from, const StopId to) const {
+        if (from == to) return Time(0);
+        const auto& tg = queryData_->queryData.transferGraph;
+        for (const auto edge : tg.edgesFrom(from)) {
+            if (StopId(tg.get(ToVertex, edge)) == to) {
+                return Time(tg.get(TravelTime, edge));
+            }
+        }
+        return noTime;
     }
 
     /// Clear all transfers for a single stop event (incoming + outgoing).
@@ -687,13 +727,6 @@ private:
             store_.commit_batch(batch);
         }
     }
-
-    /// Compute a redirection target for a specific transfer source.
-    [[nodiscard]] std::optional<PersistentTripId> findNextFeasibleTripOnRoute(PersistentTripId sourceTrip,
-                                                                              PersistentTripId cancelledTrip,
-                                                                              PersistentRouteId oldRouteId,
-                                                                              StopIndex exitIndex,
-                                                                              StopIndex boardIndex) const;
 
     // === Domination cleanup (incoming discovery only) ===
 

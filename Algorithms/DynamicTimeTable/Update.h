@@ -33,7 +33,6 @@ struct UpdatePipeline {
         enforceFifo(data, context);
         stats += processInsertions(data, updates, context);
 
-        finalizeChangeSummary(data, context);
         data.latestChanges_ = std::move(context.summary);
 
         return stats;
@@ -348,27 +347,6 @@ private:
         }
 
         return events;
-    }
-
-    static void finalizeChangeSummary(Data& data, UpdateContext& context) {
-        if (context.summary.cancelledTrips.empty()) return;
-
-        for (CancelledTripInfo& info : context.summary.cancelledTrips) {
-            info.nextActiveTrip = noPersistentTripId;
-            if (!data.isRoute(info.oldRouteId)) continue;
-
-            const auto& list = data.routes_[info.oldRouteId].trips;
-            if (list.empty()) continue;
-
-            const Time refDep = getFirstDepartureTime(data, info.tripId);
-            auto it = std::lower_bound(list.begin(), list.end(), refDep,
-                                       [&data](PersistentTripId t, Time dep) {
-                                           return getFirstDepartureTime(data, t) < dep;
-                                       });
-            if (it != list.end()) {
-                info.nextActiveTrip = *it;
-            }
-        }
     }
 
     static PersistentRouteId findCompatibleRoute(Data& data, const std::vector<StopId>& stopSequence,
