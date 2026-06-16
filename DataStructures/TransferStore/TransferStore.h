@@ -80,13 +80,7 @@ private:
     void apply_ops_outgoing_unlocked(NodeID node, const std::vector<BatchOp>& ops) {
         if (ops.empty()) return;
 
-        std::size_t adds = 0;
-        for (const auto& op : ops) {
-            (op.add) ? ++adds : --adds;
-        }
-
         auto& storage = out_[node];
-        storage.reserve(storage.size() + adds);
 
         for (const auto& op : ops) {
             auto it = std::find_if(storage.begin(), storage.end(),
@@ -109,13 +103,7 @@ private:
     void apply_ops_incoming_unlocked(NodeID node, const std::vector<BatchOp>& ops) {
         if (ops.empty()) return;
 
-        std::size_t adds = 0;
-        for (const auto& op : ops) {
-            (op.add) ? ++adds : --adds;
-        }
-
         auto& storage = in_[node];
-        storage.reserve(storage.size() + adds);
 
         for (const auto& op : ops) {
             if (op.add) {
