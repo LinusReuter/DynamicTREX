@@ -398,96 +398,105 @@ private:
         if (flatToEvent == noStopEvent) return;
 
         Time toDepTime = departureTimeOfEvent(toEvent);
-        if (toDepTime == noTime) return;  // invalid departure time
+        if (toDepTime == noTime) return;  // Boarding not allowed at this target event
 
-        TripId toTrip = queryData_->queryData.tripOfStopEvent[flatToEvent];
-        RouteId toRoute = queryData_->queryData.routeOfTrip[toTrip];
+        const auto& qd = queryData_->queryData;
+        TripId toTrip = qd.tripOfStopEvent[flatToEvent];
+        // Can't transfer to the last stop of a trip
+        if (flatToEvent == (qd.firstStopEventOfTrip[toTrip + 1] -1)) return;
+        RouteId toRoute = qd.routeOfTrip[toTrip];
         StopIndex toIndex = stopIndexOfEvent(toEvent);
         StopId toStop = stopOfEvent(toEvent);
 
-        TripId firstTripOfToRoute = queryData_->queryData.firstTripOfRoute[toRoute];
+        // Profile optimization: find departure time of the immediate previous trip on the target route.
+        // If a source trip can reach the previous trip, it shouldn't transfer to this one.
+        TripId firstTripOfToRoute = qd.firstTripOfRoute[toRoute];
         Time prevDepTime = noTime;
 
         if (toTrip > firstTripOfToRoute) {
             TripId uPrev = TripId(toTrip - 1);
-            StopEventId prevFlatEvent = StopEventId(queryData_->queryData.firstStopEventOfTrip[uPrev] + toIndex);
-            prevDepTime = Time(queryData_->queryData.eventDepTimes[prevFlatEvent]);
+            StopEventId prevFlatEvent = StopEventId(qd.firstStopEventOfTrip[uPrev] + toIndex);
+            prevDepTime = Time(qd.eventDepTimes[prevFlatEvent]);
         }
 
+        // Gather all incoming connected stops (self-transfer + reverse footpaths)
         std::vector<std::pair<StopId, Time>> connectedStops;
-        connectedStops.emplace_back(toStop, 0);
+        connectedStops.emplace_back(toStop, Time(0));
 
-        const auto& rtg = queryData_->queryData.reverseTransferGraph;
+        const auto& rtg = qd.reverseTransferGraph;
         for (const auto edge : rtg.edgesFrom(toStop)) {
-            auto q = StopId(rtg.get(ToVertex, edge));
+            StopId q = StopId(rtg.get(ToVertex, edge));
             Time travelTime = Time(rtg.get(TravelTime, edge));
             connectedStops.emplace_back(q, travelTime);
         }
 
-        struct Source {
+        // Collect all potential source route segments
+        struct SourceSegment {
             RouteId route;
             StopIndex i;
             Time footPathTime;
         };
-
-        std::vector<Source> sources;
-        sources.reserve(connectedStops.size() * 4);
+        std::vector<SourceSegment> sources;
+        sources.reserve(connectedStops.size() * 4); // Heuristic allocation
 
         for (const auto& [q, footPathTime] : connectedStops) {
-            for (const auto& segment : queryData_->queryData.routesContainingStop(q)) {
+            for (const auto& segment : qd.routesContainingStop(q)) {
+                if (segment.stopIndex == StopIndex(0)) continue; // Can't transfer from the first stop of a trip
                 sources.push_back({segment.routeId, segment.stopIndex, footPathTime});
             }
         }
 
-        // Sorting by route improves access pattern on flat arrays
-        std::ranges::sort(sources.begin(), sources.end(), [](const Source& a, const Source& b) {
+        // Sort by route to maintain excellent cache locality over contiguous CRS flat vectors
+        std::ranges::sort(sources.begin(), sources.end(), [](const SourceSegment& a, const SourceSegment& b) {
             if (a.route != b.route) return a.route < b.route;
             if (a.i != b.i) return a.i < b.i;
             return a.footPathTime < b.footPathTime;
         });
 
+        // Scan sources and collect valid connections
         for (const auto& src : sources) {
-            if (src.i == StopIndex(0)) {
-                continue;
-            }
+            TripId firstTrip = qd.firstTripOfRoute[src.route];
+            TripId endTrip = qd.firstTripOfRoute[src.route + 1];
+            uint32_t numTrips = endTrip - firstTrip;
+            if (numTrips == 0) continue;
+
+            // Leverage Consistency Invariant: if the first trip is noTime, exiting is forbidden for the entire route
+            StopEventId firstEv = StopEventId(qd.firstStopEventOfTrip[firstTrip] + src.i);
+            if (Time(qd.eventArrTimes[firstEv]) == noTime) continue;
+
             int64_t maxArr = static_cast<int64_t>(toDepTime) - static_cast<int64_t>(src.footPathTime);
             int64_t minArr = (prevDepTime != noTime)
                                  ? static_cast<int64_t>(prevDepTime) - static_cast<int64_t>(src.footPathTime)
                                  : -1;
 
-            TripId firstTrip = queryData_->queryData.firstTripOfRoute[src.route];
-            TripId endTrip = queryData_->queryData.firstTripOfRoute[src.route + 1];
-            uint32_t numTrips = endTrip - firstTrip;
+            // Binary search across trips to locate the first candidate where arrTime > minArr
+            int left = 0;
+            int right = static_cast<int>(numTrips) - 1;
+            int firstIdx = numTrips;
 
-            if (numTrips == 0) continue;
+            while (left <= right) {
+                int mid = left + (right - left) / 2;
+                TripId t = TripId(firstTrip + mid);
+                StopEventId ev = StopEventId(qd.firstStopEventOfTrip[t] + src.i);
+                int64_t arrTime = static_cast<int64_t>(qd.eventArrTimes[ev]);
 
-            uint32_t count = numTrips;
-            uint32_t first = 0;
-
-            // Binary Search bounds
-            while (count > 0) {
-                uint32_t step = count / 2;
-                uint32_t it = first + step;
-                TripId t = TripId(firstTrip + it);
-                StopEventId ev = StopEventId(queryData_->queryData.firstStopEventOfTrip[t] + src.i);
-                auto arrTime = static_cast<int64_t>(queryData_->queryData.eventArrTimes[ev]);
-
-                if (arrTime <= minArr) {
-                    first = ++it;
-                    count -= step + 1;
+                if (arrTime > minArr) {
+                    firstIdx = mid;
+                    right = mid - 1;
                 } else {
-                    count = step;
+                    left = mid + 1;
                 }
             }
 
-            // Iterate forward to collect everything in the strict window
-            for (uint32_t idx = first; idx < numTrips; ++idx) {
+            // Iterate forward to collect everything within the valid arrival window
+            for (uint32_t idx = static_cast<uint32_t>(firstIdx); idx < numTrips; ++idx) {
                 TripId t = TripId(firstTrip + idx);
-                StopEventId ev = StopEventId(queryData_->queryData.firstStopEventOfTrip[t] + src.i);
-                auto arrTime = static_cast<int64_t>(queryData_->queryData.eventArrTimes[ev]);
+                StopEventId ev = StopEventId(qd.firstStopEventOfTrip[t] + src.i);
+                int64_t arrTime = static_cast<int64_t>(qd.eventArrTimes[ev]);
 
-                if (arrTime > maxArr) break;
+                if (arrTime > maxArr) break; // Window closed; later trips will arrive too late
 
+                // Filter out U-Turns and same-route forward invalidities
                 if (src.route == toRoute && toTrip >= t && toIndex >= src.i) continue;
                 if (isUTurn(t, src.i, toTrip, toIndex)) continue;
 
