@@ -180,7 +180,14 @@ public:
         std::sort(storage.begin(), storage.end());
     }
 
-    // Spans are now inherently unordered unless explicit sort is called
+    outgoing_span outgoing_unsorted(const NodeID from) override {
+        return {out_[from].data(), out_[from].size()};
+    }
+
+    incoming_span incoming_unsorted(const NodeID to) override {
+        return {in_[to].data(), in_[to].size()};
+    }
+
     outgoing_span outgoing_sorted(const NodeID from) override {
         sort_outgoing(from);
         return {out_[from].data(), out_[from].size()};

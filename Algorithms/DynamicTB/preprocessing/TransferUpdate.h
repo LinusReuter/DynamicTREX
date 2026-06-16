@@ -766,8 +766,7 @@ private:
         // PersistentTripId pFromTrip = queryData_->flatToPersistentTrip[flatFromTrip];
 
         // Open a batch for the source event's outgoing edges
-        auto batch = store_.begin_batch(fromEvent, Store::Direction::Outgoing);
-        auto outgoingEdges = store_.outgoing_sorted(fromEvent);
+        auto outgoingEdges = store_.outgoing_unsorted(fromEvent);
 
         for (const auto& edge : outgoingEdges) {
             PersistentStopEventId u2Event = edge.to;
@@ -782,7 +781,6 @@ private:
                 bool isDominated = false;
 
                 // 1. Temporal Pruning (ALWAYS ON)
-                // Existing edge is only dominated if it goes to a later trip AT THE SAME STOP INDEX
                 if (u2Index == toIndex && flatU2Trip > flatToTrip) {
                     isDominated = true;
                 }
@@ -794,16 +792,15 @@ private:
                 }
 
                 if (isDominated) {
-                    store_.remove_outgoing_edge(batch, u2Event);
+                    store_.remove_edge(fromEvent, u2Event);
 
                     if (edge.meta.isMinimized) {
-                        // TODO: Mark source trip (pFromTrip) for re-minimization.
+                        // TODO: Mark source trip for re-minimization.
                     }
+                    break;
                 }
             }
         }
-
-        store_.commit_batch(batch);
     }
     // === Minimization (flag updates only; full set remains intact) ===
 

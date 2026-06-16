@@ -45,6 +45,14 @@ public:
     /// Append nodes to reach maxNodeId
     virtual void add_nodes(NodeID maxNodeId) = 0;
 
+    // ===  Adjacency views ===
+
+    /// Outgoing adjacency view for `from` (read-only).
+    virtual outgoing_span outgoing_unsorted(NodeID from) = 0;
+
+    /// Incoming adjacency view for `to` (read-only sources only).
+    virtual incoming_span incoming_unsorted(NodeID to) = 0;
+
     // === Sorted adjacency views ===
 
     /// Outgoing adjacency view for `from` (read-only).
