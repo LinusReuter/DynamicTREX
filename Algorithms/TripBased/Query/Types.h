@@ -62,6 +62,7 @@ struct EdgeLabel {
     void init(const StopEventId event, const TripId trip, const StopEventId firstEvent) {
         setTrip(trip);
         setFirstEvent(firstEvent);
+        // TODO WHY +1 ????
         setStopIndex(StopIndex(event - firstEvent + 1));
     }
 
@@ -332,7 +333,8 @@ inline std::vector<SimpleEdge> extractTopology(const Transfers& transfers) {
         for (size_t edgeIdx = edgeBegin; edgeIdx < edgeEnd; ++edgeIdx) {
             // Guard against potential out-of-bounds if building custom/malformed data
             if (edgeIdx < transfers.labels.size()) {
-                uint32_t toVertex = static_cast<uint32_t>(transfers.labels[edgeIdx].getStopEvent());
+                // TODO Correction of + 1
+                uint32_t toVertex = static_cast<uint32_t>(transfers.labels[edgeIdx].getStopEvent() -1);
                 edges.push_back({static_cast<uint32_t>(fromVertex), toVertex});
             }
         }
@@ -365,6 +367,76 @@ inline TransferComparisonResult compareTransfers(const Transfers& lhs, const Tra
                         std::back_inserter(result.onlyInSecond));
 
     return result;
+}
+
+
+inline bool isUTurn(const TripId fromTrip, const StopIndex fromIndex, const TripId toTrip,
+                    const StopIndex toIndex, const QueryData& qd) noexcept {
+    if (fromIndex < 2) return false;
+    auto num_stops_to = qd.firstStopEventOfTrip[toTrip + 1] - qd.firstStopEventOfTrip[toTrip];
+    if (toIndex + 1 >= num_stops_to) return false;
+    auto stop_sq_from = qd.stopArrayOfRoute(qd.routeOfTrip[fromTrip]);
+    auto stop_sq_to = qd.stopArrayOfRoute(qd.routeOfTrip[toTrip]);
+    if (stop_sq_from[fromIndex - 1] != stop_sq_to[toIndex + 1]) return false;
+    if (qd.eventArrTimes[qd.firstStopEventOfTrip[fromTrip] + fromIndex - 1] >
+        qd.eventDepTimes[qd.firstStopEventOfTrip[toTrip] + toIndex + 1])
+        return false;
+    return true;
+}
+
+inline bool isSameRouteForward(const TripId fromTrip, const StopIndex fromIndex, const TripId toTrip, const StopIndex toIndex,
+                        const QueryData& qd) noexcept {
+    return (qd.routeOfTrip[fromTrip] == qd.routeOfTrip[toTrip]) && (toTrip >= fromTrip) && (toIndex >= fromIndex);
+}
+
+inline bool isValidTransfer(const TripId fromTrip, const StopIndex fromIndex, const TripId toTrip, const StopIndex toIndex,
+                            const QueryData& qd) noexcept {
+    if (fromIndex == 0) return false;
+    auto num_stops_to = qd.firstStopEventOfTrip[toTrip + 1] - qd.firstStopEventOfTrip[toTrip];
+    if (toIndex >= num_stops_to) return false;
+    if (isUTurn(fromTrip, fromIndex, toTrip, toIndex, qd)) return false;
+    if (isSameRouteForward(fromTrip, fromIndex, toTrip, toIndex, qd)) return false;
+    auto footpath_time = 0;
+    auto from_route = qd.routeOfTrip[fromTrip];
+    auto stop_from = qd.stopArrayOfRoute(from_route)[fromIndex];
+    auto to_route = qd.routeOfTrip[toTrip];
+    auto stop_to = qd.stopArrayOfRoute(to_route)[toIndex];
+    if (stop_from != stop_to) {
+        auto edge = qd.transferGraph.findEdge(stop_from, stop_to);
+        if (edge == noEdge) {
+            std::cout << "No edge found for " << stop_from << " -> " << stop_to << std::endl;
+            return false;
+        }
+        footpath_time = qd.transferGraph.get(TravelTime, qd.transferGraph.findEdge(Vertex(stop_from.value()), Vertex(stop_to.value())));
+    }
+    auto arr_time = qd.eventArrTimes[qd.firstStopEventOfTrip[fromTrip] + fromIndex];
+    auto dep_time = qd.eventDepTimes[qd.firstStopEventOfTrip[toTrip] + toIndex];
+    if (arr_time + footpath_time > dep_time) return false;
+    return true;
+}
+
+/**
+ * Validate Transfers on basic invariants:
+ * - No transfers from a trips first Stop
+ * - No transfers to a trips last Stop
+ * - arrival + footpath <= departure
+ * - No U-Turns (same trip, later stop -> earlier stop)
+ * - No same-route forward transfers (same route, later trip -> earlier trip)
+ */
+inline bool validateTransfers(const Transfers& transfers, const QueryData& qd) {
+    bool ret = true;
+    std::vector<SimpleEdge> edges = extractTopology(transfers);
+
+    for (auto edge : edges) {
+        auto from_stop_idx = edge.from - qd.firstStopEventOfTrip[qd.tripOfStopEvent[edge.from]];
+        auto to_stop_idx = edge.to - qd.firstStopEventOfTrip[qd.tripOfStopEvent[edge.to]];
+        bool valid = isValidTransfer(qd.tripOfStopEvent[edge.from], StopIndex(from_stop_idx), qd.tripOfStopEvent[edge.to], StopIndex(to_stop_idx), qd);
+        if (!valid) {
+            std::cout << "Invalid transfer from event " << edge.from << " (trip " << qd.tripOfStopEvent[edge.from] << ", stop index " << from_stop_idx << ") to event " << edge.to << " (trip " << qd.tripOfStopEvent[edge.to] << ", stop index " << to_stop_idx << ")\n";
+            ret = false;
+        }
+    }
+    return ret;
 }
 
 }  // namespace TripBased
