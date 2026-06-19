@@ -21,12 +21,13 @@ using namespace Shell;
 
 // === Helpers ===
 
-inline void validateGenerators(const TripBased::Transfers& genA, const TripBased::Transfers& genB,
+inline bool validateGenerators(const TripBased::Transfers& genA, const TripBased::Transfers& genB,
                                const DynamicTimeTable::Algo::DynamicQueryData& query_data) {
     auto diff = TripBased::compareTransfers(genA, genB);
 
     if (diff.areEqual()) {
         std::cout << "Topologies are identical!\n";
+        return true;
     } else if (diff.isFirstSuperset()) {
         std::cout << "Generator A is a strict superset of Generator B.\n";
         std::cout << "Only in A: " << diff.onlyInFirst.size() << " edges.\n";
@@ -94,6 +95,7 @@ inline void validateGenerators(const TripBased::Transfers& genA, const TripBased
                       << " StopIndex: " << to_stop_idx << " (Event:p" << p_to_event << ":f" << edge.to << ")\n";
         }
     }
+    return false;
 }
 
 class RAPTORToDynamic : public ParameterizedCommand {
@@ -417,7 +419,7 @@ public:
         std::cout << "Validate base transerfs:" << std::endl;
         validateTransfers(initialDynamicTransfers, queryData.queryData);
 
-        std::cout << "Building static non-minimized full transfers..." << std::endl;
+        /* std::cout << "Building static non-minimized full transfers..." << std::endl;
         RAPTOR::Data raptorData(raptorFile);
         TripBased::Data staticTripData(raptorData);
 
@@ -433,7 +435,7 @@ public:
 
         std::cout << "\nInitial comparison: dynamic full store export vs static non-minimized full base path"
                   << std::endl;
-        validateGenerators(initialDynamicTransfers, staticInitialTransfers, queryData);
+        validateGenerators(initialDynamicTransfers, staticInitialTransfers, queryData); */
 
         DynamicTimeTable::Algo::UpdateSimulator simulator(cfg);
         DynamicTimeTable::Algo::UpdateSimulationStats simStats{};
@@ -521,12 +523,12 @@ public:
         addParameter("Input binary (RAPTOR Data)");
         addParameter("Current time (seconds)", "28800");
         addParameter("Base Random seed", "1");
-        addParameter("Iterations", "100");
+        addParameter("Iterations", "200");
         addParameter("Output File Path", "simulation_output.txt");
         addParameter("Temp Store Path", "base_store.tmp");
-        addParameter("Expected cancellations", "5");
-        addParameter("Expected delays", "0");
-        addParameter("Expected skipped trips", "0");
+        addParameter("Expected cancellations", "10");
+        addParameter("Expected delays", "10");
+        addParameter("Expected skipped trips", "10");
         addParameter("Cancellation horizon (seconds)", "7200");
         addParameter("Skip horizon (seconds)", "7200");
         addParameter("Min delay (seconds)", "60");
@@ -625,12 +627,15 @@ public:
             outFile << "Incremental edges: " << incrementalTransfers.labels.size()
                     << " | Rebuilt edges: " << rebuiltTransfers.labels.size() << "\n";
 
+            std::streambuf* coutBuf = std::cout.rdbuf();
             std::cout.rdbuf(outFile.rdbuf());
             std::cout << "Validate incremental transerfs:" << std::endl;
-            TripBased::validateTransfers(incrementalTransfers, updatedQueryData.queryData);
+            bool valid = TripBased::validateTransfers(incrementalTransfers, updatedQueryData.queryData);
+            std::cout << "Incremental Transfers validation: " << (valid ? "PASSED" : "FAILED") << "\n";
 
             // Safety size check
-            bool isConsistent = (incrementalTransfers.labels.size() == rebuiltTransfers.labels.size());
+            bool isConsistent = validateGenerators(incrementalTransfers, rebuiltTransfers, updatedQueryData);
+            std::cout.rdbuf(coutBuf);
 
             if (!isConsistent) {
                 divergenceFound = true;
@@ -645,8 +650,6 @@ public:
 
                 std::streambuf* coutBuf = std::cout.rdbuf();
                 std::cout.rdbuf(outFile.rdbuf());
-
-                validateGenerators(incrementalTransfers, rebuiltTransfers, updatedQueryData);
 
                 std::cout << "\nChangeSummary" << std::endl;
                 std::cout << "  Cancelled trips: " << changes.cancelledTrips.size() << std::endl;
@@ -669,7 +672,6 @@ public:
                 }
 
                 std::cout.rdbuf(coutBuf);
-                break;
             }
 
             outFile << "Status: Success (No Issues Found)\n\n";

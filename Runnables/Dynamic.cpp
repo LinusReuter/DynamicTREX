@@ -16,7 +16,8 @@ int main(int argc, char** argv) {
     new LoadAndApplyDynamicPartition(shell);
     new BuildDynamicQueryData(shell);
     new BuildInitialTransferStore(shell);
-    new SimulateDynamicUpdates(shell);
+    new SimulateDynamicUpdate(shell);
+    new SimulateAndCompareTransferUpdate(shell);
     new SimulateAndCompareTransferUpdates(shell);
 
     shell.run();
