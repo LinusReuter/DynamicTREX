@@ -7,19 +7,42 @@
 #include <cstddef>
 #include <span>
 #include <vector>
+#include <iostream>
+#include <utility>
 
 #include "ITransferStore.h"
+#include "ExternalLibs/gch_small_vector/small_vector.hpp"
 
-// Maybe test out small vec as alternative e.g.
-// #include "gch/small_vector.hpp"
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#include <immintrin.h>
+#define SPINLOCK_PAUSE() _mm_pause()
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#define SPINLOCK_PAUSE() asm volatile("yield" ::: "memory")
+#else
+#define SPINLOCK_PAUSE() ((void)0)
+#endif
+
+static constexpr bool logging = false;
 
 namespace transfer_store_detail {
+template<bool ThreadSafe>
 struct SpinLock {
     std::atomic_flag flag = ATOMIC_FLAG_INIT;
     void lock() noexcept {
-        while (flag.test_and_set(std::memory_order_acquire)) {}
+        if constexpr (ThreadSafe) {
+            while (flag.test_and_set(std::memory_order_acquire)) {
+                while (flag.test(std::memory_order_relaxed)) {
+                    SPINLOCK_PAUSE();
+                }
+            }
+        }
     }
-    void unlock() noexcept { flag.clear(std::memory_order_release); }
+    void unlock() noexcept {
+        if constexpr (ThreadSafe) {
+            flag.clear(std::memory_order_release);
+        }
+    }
 };
 
 // Utility for O(1) unordered erasure
@@ -36,7 +59,7 @@ bool swap_erase_if(Vec& v, Pred p) {
 
 } // namespace transfer_store_detail
 
-template <typename NodeID, typename EdgeMeta, std::size_t StripeCount = 1024>
+template <typename NodeID, typename EdgeMeta, std::size_t StripeCount = 1024, bool ThreadSafe = true>
 class TransferStore final : public ITransferStore<NodeID, EdgeMeta> {
 public:
     using Base = ITransferStore<NodeID, EdgeMeta>;
@@ -45,6 +68,10 @@ public:
     using incoming_span = typename Base::incoming_span;
     using batch_id_type = typename Base::batch_id_type;
     using Direction = typename Base::Direction;
+
+    TransferStore() = default;
+
+    explicit TransferStore(const std::string& fileName) { deserialize(fileName); }
 
 private:
     static_assert(StripeCount > 0, "StripeCount must be > 0");
@@ -64,7 +91,7 @@ private:
     struct BatchContext {
         NodeID node{};
         bool incoming{false};
-        std::vector<BatchOp> ops;
+        gch::small_vector<BatchOp, 16> ops; // Keeps batches of <= 16 operations entirely on the stack
         void clear() { ops.clear(); }
     };
 
@@ -77,7 +104,7 @@ private:
         return static_cast<std::size_t>(node) & (StripeCount - 1);
     }
 
-    void apply_ops_outgoing_unlocked(NodeID node, const std::vector<BatchOp>& ops) {
+    void apply_ops_outgoing_unlocked(NodeID node, std::span<const BatchOp> ops) {
         if (ops.empty()) return;
 
         auto& storage = out_[node];
@@ -100,7 +127,7 @@ private:
         }
     }
 
-    void apply_ops_incoming_unlocked(NodeID node, const std::vector<BatchOp>& ops) {
+    void apply_ops_incoming_unlocked(NodeID node, std::span<const BatchOp> ops) {
         if (ops.empty()) return;
 
         auto& storage = in_[node];
@@ -117,18 +144,61 @@ private:
         }
     }
 
-    void apply_ops_outgoing_locked(NodeID node, const std::vector<BatchOp>& ops) {
+    void apply_ops_outgoing_locked(NodeID node, std::span<const BatchOp> ops) {
         auto& lock = out_locks_[stripe_index(node)];
         lock.lock();
         apply_ops_outgoing_unlocked(node, ops);
         lock.unlock();
     }
 
-    void apply_ops_incoming_locked(NodeID node, const std::vector<BatchOp>& ops) {
+    void apply_ops_incoming_locked(NodeID node, std::span<const BatchOp> ops) {
         auto& lock = in_locks_[stripe_index(node)];
         lock.lock();
         apply_ops_incoming_unlocked(node, ops);
         lock.unlock();
+    }
+
+    void apply_op_outgoing_locked(NodeID node, const BatchOp& op) {
+        auto& lock = out_locks_[stripe_index(node)];
+        lock.lock();
+        apply_op_outgoing_unlocked(node, op);
+        lock.unlock();
+    }
+
+    void apply_op_outgoing_unlocked(NodeID node, const BatchOp& op) {
+        auto& storage = out_[node];
+        if (op.add) {
+            auto it = std::find_if(storage.begin(), storage.end(),
+                                   [&](const OutEdge& e) { return e.to == op.other; });
+            if (it != storage.end()) {
+                it->meta = op.meta; // Edge exists, update meta
+            } else {
+                storage.push_back(OutEdge{op.other, op.meta});
+            }
+        } else {
+            transfer_store_detail::swap_erase_if(storage, [&](const OutEdge& e) { return e.to == op.other; });
+        }
+    }
+
+    void apply_op_incoming_locked(NodeID node, const BatchOp& op) {
+        auto& lock = out_locks_[stripe_index(node)];
+        lock.lock();
+        apply_op_outgoing_unlocked(node, op);
+        lock.unlock();
+    }
+
+    void apply_op_incoming_unlocked(NodeID node, const BatchOp& op) {
+        auto& storage = in_[node];
+        if (op.add) {
+            auto it = std::find(storage.begin(), storage.end(), op.other);
+            if (it == storage.end()) {
+                storage.push_back(op.other);
+            } else {
+                it->meta = op.meta; // Edge exists, update meta
+            }
+        } else {
+            transfer_store_detail::swap_erase_if(storage, [&](NodeID n){ return n == op.other; });
+        }
     }
 
     // Build incoming from outgoing (sorted by from).
@@ -206,25 +276,36 @@ public:
     }
 
     bool add_edge(NodeID from, NodeID to, const EdgeMeta& meta) override {
-        auto& storage = out_[from];
-        auto it = std::find_if(storage.begin(), storage.end(),
+        log_modification(from, to, true);
+        auto& lockF = out_locks_[stripe_index(from)];
+        auto& lockT = in_locks_[stripe_index(to)];
+        lockF.lock();
+        auto& out = out_[from];
+        auto it = std::find_if(out.begin(), out.end(),
                                [to](const OutEdge& e) { return e.to == to; });
-        if (it != storage.end()) return false;
-
-        storage.push_back(OutEdge{to, meta});
-
-        std::vector<BatchOp> iops = {{from, meta, true}};
-        apply_ops_incoming_locked(to, iops);
+        if (it != out.end()) return false;
+        out.push_back(OutEdge{to, meta});
+        lockF.unlock();
+        lockT.lock();
+        auto& in = in_[to];
+        auto it2 = std::find_if(in.begin(), in.end(), [from](const NodeID e) { return e == from; });
+        if (it2 == in.end()) in.push_back(from);
+        lockT.unlock();
         return true;
     }
 
     bool remove_edge(NodeID from, NodeID to) override {
+        log_modification(from, to, false);
+        auto& lockF = out_locks_[stripe_index(from)];
+        auto& lockT = in_locks_[stripe_index(to)];
+        lockF.lock();
         if (!transfer_store_detail::swap_erase_if(out_[from], [to](const OutEdge& e) { return e.to == to; })) {
             return false;
         }
-
-        std::vector<BatchOp> iops = {{from, EdgeMeta{}, false}};
-        apply_ops_incoming_locked(to, iops);
+        lockF.unlock();
+        lockT.lock();
+        transfer_store_detail::swap_erase_if(in_[from], [&](NodeID n){ return n == to; });
+        lockT.unlock();
         return true;
     }
 
@@ -239,16 +320,13 @@ public:
     }
 
     void clear_outgoing(NodeID from) override {
-        // Fast path: trace edges rather than scanning V locks
-        auto out_edges = std::move(out_[from]);
-        out_[from].clear(); // out_edges now owns the memory for this traversal
-
-        for (const auto& e : out_edges) {
+        for (const auto& e : out_[from]) {
             auto& lock = in_locks_[stripe_index(e.to)];
             lock.lock();
             transfer_store_detail::swap_erase_if(in_[e.to], [from](NodeID n){ return n == from; });
             lock.unlock();
         }
+        out_[from].clear();
     }
 
     void clear_incoming(NodeID to) override {
@@ -322,26 +400,50 @@ public:
         ctx.node = node;
         ctx.incoming = (dir == Direction::Incoming);
         ctx.clear();
+
+        log("Batch BEGIN node=",
+            node,
+            " dir=",
+            (ctx.incoming ? "incoming" : "outgoing"));
+
         return batch_id_type{0};
     }
 
     void commit_batch(batch_id_type) override {
         auto& ctx = batch_context();
+
+        log("Batch COMMIT node=",
+            ctx.node,
+            " dir=",
+            (ctx.incoming ? "incoming" : "outgoing"),
+            " ops=",
+            ctx.ops.size());
+
         if (ctx.incoming) {
             apply_ops_incoming_unlocked(ctx.node, ctx.ops);
             // Mirror incoming ops into outgoing (may be contended).
             for (const auto& op : ctx.ops) {
-                std::vector<BatchOp> mirror = {{ctx.node, op.meta, op.add}};
+                log_modification(op.other, ctx.node, op.add);
+
+                std::array<BatchOp, 1> mirror{BatchOp{ctx.node, op.meta, op.add}};
                 apply_ops_outgoing_locked(op.other, mirror);
             }
         } else {
             apply_ops_outgoing_unlocked(ctx.node, ctx.ops);
             // Mirror outgoing ops into incoming (may be contended).
             for (const auto& op : ctx.ops) {
-                std::vector<BatchOp> mirror = {{ctx.node, op.meta, op.add}};
+                log_modification(ctx.node, op.other, op.add);
+
+                std::array<BatchOp, 1> mirror{BatchOp{ctx.node, op.meta, op.add}};
                 apply_ops_incoming_locked(op.other, mirror);
             }
         }
+
+        log("Batch END node=",
+            ctx.node,
+            " applied_ops=",
+            ctx.ops.size());
+
         ctx.clear();
     }
 
@@ -376,9 +478,35 @@ public:
     void reserve_outgoing(NodeID node, std::size_t n) override { out_[node].reserve(n); }
     void reserve_incoming(NodeID node, std::size_t n) override { in_[node].reserve(n); }
 
+    template<typename... Args>
+    static void log(Args&&... args) {
+        if constexpr (logging) {
+            (std::cout << ... << std::forward<Args>(args)) << '\n';
+        }
+    }
+
+    static void log_modification(NodeID from, NodeID to, bool addition) {
+        if constexpr (logging) {
+            log("Edge ",
+                (addition ? "ADD" : "REMOVE"),
+                " ",
+                from,
+                " -> ",
+                to);
+        }
+    }
+
+    void serialize(const std::string& fileName) const noexcept {
+        IO::serialize(fileName, out_, in_);
+    }
+
+    void deserialize(const std::string& fileName) noexcept {
+        IO::deserialize(fileName, out_, in_);
+    }
+
 private:
-    std::array<transfer_store_detail::SpinLock, StripeCount> out_locks_{};
-    std::array<transfer_store_detail::SpinLock, StripeCount> in_locks_{};
+    std::array<transfer_store_detail::SpinLock<ThreadSafe>, StripeCount> out_locks_{};
+    std::array<transfer_store_detail::SpinLock<ThreadSafe>, StripeCount> in_locks_{};
     std::vector<OutStorage> out_{};
     std::vector<InStorage> in_{};
     bool allow_inconsistent_requested_{false};
