@@ -339,10 +339,6 @@ inline std::vector<SimpleEdge> extractTopology(const Transfers& transfers) {
             }
         }
     }
-
-    // Sort to enable linear-time set operations
-    std::sort(edges.begin(), edges.end());
-    // edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
     return edges;
 }
 
