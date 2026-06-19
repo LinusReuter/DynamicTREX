@@ -427,6 +427,7 @@ inline bool validateTransfers(const Transfers& transfers, const QueryData& qd) {
     bool ret = true;
     std::vector<SimpleEdge> edges = extractTopology(transfers);
 
+    #pragma omp parallel for
     for (auto edge : edges) {
         auto from_stop_idx = edge.from - qd.firstStopEventOfTrip[qd.tripOfStopEvent[edge.from]];
         auto to_stop_idx = edge.to - qd.firstStopEventOfTrip[qd.tripOfStopEvent[edge.to]];
