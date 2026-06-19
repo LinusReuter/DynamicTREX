@@ -68,7 +68,7 @@ private:
             }
 
             context.summary.cancelledTrips.push_back(
-                makeCancelledTripInfo(tripId, oldRoute, std::move(activeEvents)));
+                makeCancelledTripInfo(tripId, oldRoute, std::move(activeEvents), getFirstDepartureTime(data, tripId)));
             stats.successfulUpdates++;
         }
 
@@ -320,17 +320,18 @@ private:
         }
 
         context.summary.cancelledTrips.push_back(
-            makeCancelledTripInfo(tripId, oldRoute, std::move(preActiveEvents)));
+            makeCancelledTripInfo(tripId, oldRoute, std::move(preActiveEvents), getFirstDepartureTime(data, tripId)));
         context.extractionQueue.push_back(tripId);
     }
 
-    static CancelledTripInfo makeCancelledTripInfo(const PersistentTripId tripId,
-                                                   const PersistentRouteId oldRoute,
-                                                   std::vector<PersistentStopEventId>&& activeEvents) {
+    static CancelledTripInfo makeCancelledTripInfo(const PersistentTripId tripId, const PersistentRouteId oldRoute,
+                                                   std::vector<PersistentStopEventId>&& activeEvents,
+                                                   const Time firstDepartureTime) {
         CancelledTripInfo info;
         info.tripId = tripId;
         info.oldRouteId = oldRoute;
         info.eventsOfCancelledTrips = std::move(activeEvents);
+        info.firstDepartureTime = firstDepartureTime;
         return info;
     }
 
@@ -381,8 +382,9 @@ private:
         if (list.empty()) return true;
 
         Time dep = getFirstDepartureTime(data, tripId);
-        auto it = std::upper_bound(list.begin(), list.end(), dep,
-                                   [&data](Time val, PersistentTripId t) { return val < getFirstDepartureTime(data, t); });
+        auto it = std::upper_bound(list.begin(), list.end(), dep, [&data](Time val, PersistentTripId t) {
+            return val < getFirstDepartureTime(data, t);
+        });
 
         // Check predecessor
         if (it != list.begin()) {
@@ -422,8 +424,9 @@ private:
     static void insertTripChronologically(Data& data, const PersistentRouteId routeId, const PersistentTripId tripId) {
         auto& list = data.routes_[routeId].trips;
         Time dep = getFirstDepartureTime(data, tripId);
-        auto it = std::upper_bound(list.begin(), list.end(), dep,
-                                   [&data](Time val, PersistentTripId t) { return val < getFirstDepartureTime(data, t); });
+        auto it = std::upper_bound(list.begin(), list.end(), dep, [&data](Time val, PersistentTripId t) {
+            return val < getFirstDepartureTime(data, t);
+        });
         list.insert(it, tripId);
     }
 

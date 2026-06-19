@@ -43,6 +43,7 @@ struct CancelledTripInfo {
     // Snapshot of previously ACTIVE stop events (non-skipped), in stop-index order.
     // The index in this vector corresponds to the stop index used by transfer updates.
     std::vector<PersistentStopEventId> eventsOfCancelledTrips;
+    Time firstDepartureTime;
 };
 
 struct ChangeSummary {
