@@ -98,6 +98,36 @@ inline bool validateGenerators(const TripBased::Transfers& genA, const TripBased
     return false;
 }
 
+inline void printDegreeDistributions(const std::unordered_map<u_int64_t, u_int64_t>& out, const std::unordered_map<u_int64_t, u_int64_t>& in) {
+    std::cout << "Degree distributions:\n";
+    std::cout << "  Outgoing: \n";
+    // extract and sort by key
+    std::vector<std::pair<u_int64_t, u_int64_t>> out_sorted;
+    out_sorted.reserve(out.size());
+    u_int64_t sum = 0;
+    for (const auto& entry : out) {
+        out_sorted.emplace_back(entry);
+        sum += entry.second;
+    }
+    std::sort(out_sorted.begin(), out_sorted.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    for (const auto& entry : out_sorted) {
+        std::cout << entry.first << ":" << entry.second << " " << (entry.second / double(sum)) * 100 << "% " << std::endl;
+    }
+
+    std::cout << "\n  Incoming: \n";
+    sum = 0;
+    std::vector<std::pair<u_int64_t, u_int64_t>> in_sorted;
+    in_sorted.reserve(in.size());
+    for (const auto& entry : in) {
+        in_sorted.emplace_back(entry);
+        sum += entry.second;
+    }
+    std::sort(in_sorted.begin(), in_sorted.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    for (const auto& entry : in_sorted) {
+        std::cout << entry.first << ":" << entry.second << " " << (entry.second / double(sum)) * 100 << "% " << std::endl;
+    }
+}
+
 class RAPTORToDynamic : public ParameterizedCommand {
 public:
     RAPTORToDynamic(BasicShell& shell)
@@ -224,6 +254,8 @@ public:
 
         std::cout << "  Nodes: " << nodeCount << std::endl;
         std::cout << "  Edges: " << edgeCount << std::endl;
+
+        printDegreeDistributions(updater.store_.edgeDegreeDistrebutionOut(), updater.store_.edgeDegreeDistrebutionIn());
     }
 };
 
@@ -509,6 +541,24 @@ public:
         std::cout << "  Added trips: " << changes.addedTrips.size() << std::endl;
         std::cout << "  Modified events: " << changes.modifiedEvents.size() << std::endl;
         std::cout << "  Trips with delayed arrivals: " << changes.tripsWithDelayedArrivals.size() << std::endl;
+
+        std::cout << "\nIn Detail:" << std::endl;
+        std::cout << "  Cancelled trips: " << std::endl;
+        for (const auto& cancelledTrip : changes.cancelledTrips) {
+            std::cout << "    " << cancelledTrip.tripId << std::endl;
+        }
+        std::cout << "  Trips to Rediscover due to Cancellation: " << std::endl;
+        for (const auto& nextOfCancelledTrip : changes.tripsToRediscoverIncomingDueToCancellation) {
+            std::cout << "    " << nextOfCancelledTrip << std::endl;
+        }
+        std::cout << "  Added trips: " << std::endl;
+        for (const auto& addedTrip : changes.addedTrips) {
+            std::cout << "    " << addedTrip << std::endl;
+        }
+        std::cout << "  Modified events: " << std::endl;
+        for (const auto& modifiedEvent : changes.modifiedEvents) {
+            std::cout << "    " << modifiedEvent << std::endl;
+        }
     }
 };
 
@@ -526,9 +576,9 @@ public:
         addParameter("Iterations", "200");
         addParameter("Output File Path", "simulation_output.txt");
         addParameter("Temp Store Path", "base_store.tmp");
-        addParameter("Expected cancellations", "10");
-        addParameter("Expected delays", "10");
-        addParameter("Expected skipped trips", "10");
+        addParameter("Expected cancellations", "100");
+        addParameter("Expected delays", "100");
+        addParameter("Expected skipped trips", "100");
         addParameter("Cancellation horizon (seconds)", "7200");
         addParameter("Skip horizon (seconds)", "7200");
         addParameter("Min delay (seconds)", "60");
@@ -567,7 +617,6 @@ public:
         const auto initialValidation = baseQueryData.validate(baseDynamicTimeTable);
         if (!initialValidation.first) {
             std::cout << "Initial DynamicQueryData validation failed: " << initialValidation.second << std::endl;
-            return;
         }
 
         std::cout << "Building initial base dynamic full transfer store..." << std::endl;
@@ -661,6 +710,10 @@ public:
                 std::cout << "  Cancelled trips: " << std::endl;
                 for (const auto& cancelledTrip : changes.cancelledTrips) {
                     std::cout << "    " << cancelledTrip.tripId << std::endl;
+                }
+                std::cout << "  Trips to Rediscover due to Cancellation: " << std::endl;
+                for (const auto& nextOfCancelledTrip : changes.tripsToRediscoverIncomingDueToCancellation) {
+                    std::cout << "    " << nextOfCancelledTrip << std::endl;
                 }
                 std::cout << "  Added trips: " << std::endl;
                 for (const auto& addedTrip : changes.addedTrips) {

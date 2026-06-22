@@ -126,10 +126,17 @@ public:
         std::vector<PersistentStopEventId> toDiscoverIncoming;
 
         store_.allowTemporaryInconsistent(true);
-        processCancelledTrips(changes.cancelledTrips, toDiscoverIncoming);
+        processCancelledTrips(changes.cancelledTrips);
         store_.sync_barrier();
 
         // Collect Discovery Vectors:
+        toDiscoverOutgoing.reserve(changes.addedTrips.size() + changes.modifiedEvents.size());
+        toDiscoverIncoming.reserve(changes.addedTrips.size() + changes.modifiedEvents.size() + changes.tripsToRediscoverIncomingDueToCancellation.size());
+
+        for (const auto pTrip : changes.tripsToRediscoverIncomingDueToCancellation) {
+            toDiscoverIncoming.append_range(queryData_->getEventsOfTrip(pTrip));
+        }
+
         for (const auto pTrip : changes.addedTrips) {
             toDiscoverOutgoing.append_range(queryData_->getEventsOfTrip(pTrip));
             toDiscoverIncoming.append_range(queryData_->getEventsOfTrip(pTrip));
@@ -253,31 +260,11 @@ private:
     /// Handle trip cancellations:
     /// 1) Redirect incoming transfers to the next active trip (if any).
     /// 2) Clear outgoing and incoming transfers of the cancelled trip.
-    void processCancelledTrips(const std::vector<DynamicTimeTable::CancelledTripInfo>& trips, std::vector<PersistentStopEventId>& toDiscoverIncoming) const {
+    void processCancelledTrips(const std::vector<DynamicTimeTable::CancelledTripInfo>& trips) const {
         for (const auto& trip : trips) {
             for (const auto event : trip.eventsOfCancelledTrips) {
                 clearEventTransfers(event);
             }
-            auto flatRoute = queryData_->persistentToFlatRoute[trip.oldRouteId];
-            if (flatRoute == noRouteId) continue;
-            std::vector<PersistentStopEventId> redirectEvents;
-            auto nextTrip = findEarliestTripOnRoute(flatRoute, StopIndex(0), trip.firstDepartureTime);
-            if (nextTrip) {
-                for (auto firstEvent = queryData_->queryData.firstStopEventOfTrip[*nextTrip]; firstEvent < queryData_->queryData.firstStopEventOfTrip[*nextTrip + 1]; ++firstEvent) {
-                    PersistentStopEventId event = queryData_->flatToPersistentEvent[firstEvent];
-                    redirectEvents.push_back(event);
-                }
-            }
-            toDiscoverIncoming.append_range(redirectEvents);
-            // TODO: +1 as Quick fix for routes with trips with equal first departure find final solution.
-            nextTrip = findEarliestTripOnRoute(flatRoute, StopIndex(0), Time(trip.firstDepartureTime + 1));
-            if (nextTrip) {
-                for (auto firstEvent = queryData_->queryData.firstStopEventOfTrip[*nextTrip]; firstEvent < queryData_->queryData.firstStopEventOfTrip[*nextTrip + 1]; ++firstEvent) {
-                    PersistentStopEventId event = queryData_->flatToPersistentEvent[firstEvent];
-                    redirectEvents.push_back(event);
-                }
-            }
-            toDiscoverIncoming.append_range(redirectEvents);
         }
     }
 
@@ -856,7 +843,7 @@ void dominationCleanupForInsertedTransfer(PersistentStopEventId fromEvent, Persi
         return std::nullopt;
     }
 
-private:
+public:
     const DynamicQueryData* queryData_{nullptr};
     Store& store_;
 };

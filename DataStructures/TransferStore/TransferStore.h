@@ -504,6 +504,22 @@ public:
         IO::deserialize(fileName, out_, in_);
     }
 
+    std::unordered_map<u_int64_t, u_int64_t> edgeDegreeDistrebutionOut() const noexcept {
+        std::unordered_map<u_int64_t, u_int64_t> degreeDist;
+        for (const auto& node : out_) {
+            ++degreeDist[node.size()];
+        }
+        return degreeDist;
+    }
+
+    std::unordered_map<u_int64_t, u_int64_t> edgeDegreeDistrebutionIn() const noexcept {
+        std::unordered_map<u_int64_t, u_int64_t> degreeDist;
+        for (const auto& node : in_) {
+            ++degreeDist[node.size()];
+        }
+        return degreeDist;
+    }
+
 private:
     std::array<transfer_store_detail::SpinLock<ThreadSafe>, StripeCount> out_locks_{};
     std::array<transfer_store_detail::SpinLock<ThreadSafe>, StripeCount> in_locks_{};

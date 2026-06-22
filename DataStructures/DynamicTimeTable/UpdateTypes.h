@@ -38,12 +38,9 @@ struct PendingUpdates {
 
 struct CancelledTripInfo {
     PersistentTripId tripId;
-    PersistentRouteId oldRouteId;  // Essential for transfer phase redirection/cleanup
-
     // Snapshot of previously ACTIVE stop events (non-skipped), in stop-index order.
     // The index in this vector corresponds to the stop index used by transfer updates.
     std::vector<PersistentStopEventId> eventsOfCancelledTrips;
-    Time firstDepartureTime;
 };
 
 struct ChangeSummary {
@@ -51,8 +48,10 @@ struct ChangeSummary {
     // Transfer stage treats these as removed from their old route context.
     // (This includes trips that were permanently cancelled AND trips that were
     // extracted due to a skipped stop or FIFO violation).
-    // If nextActiveTrip is valid, redirect incoming transfers; otherwise delete.
     std::vector<CancelledTripInfo> cancelledTrips;
+
+    // Set of Trips needed Incoming rediscovery due to one or more directly previous trips were canceled
+    std::vector<PersistentTripId> tripsToRediscoverIncomingDueToCancellation;
 
     // PHASE 2 & 3: Discovery Triggers - New Additions
     // Trips that were genuinely added, or trips that were re-inserted into a new

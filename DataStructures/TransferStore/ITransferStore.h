@@ -161,4 +161,7 @@ public:
     // === Optional performance hooks (no-ops by default) ===
     virtual void reserve_outgoing(NodeID, std::size_t) {}
     virtual void reserve_incoming(NodeID, std::size_t) {}
+
+    virtual std::unordered_map<u_int64_t, u_int64_t> edgeDegreeDistrebutionOut() const noexcept = 0;
+    virtual std::unordered_map<u_int64_t, u_int64_t> edgeDegreeDistrebutionIn() const noexcept = 0;
 };
