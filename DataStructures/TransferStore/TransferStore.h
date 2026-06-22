@@ -27,7 +27,7 @@ static constexpr bool logging = false;
 
 namespace transfer_store_detail {
 template<bool ThreadSafe>
-struct SpinLock {
+struct alignas(std::hardware_destructive_interference_size) SpinLock {
     std::atomic_flag flag = ATOMIC_FLAG_INIT;
     void lock() noexcept {
         if constexpr (ThreadSafe) {
@@ -59,7 +59,7 @@ bool swap_erase_if(Vec& v, Pred p) {
 
 } // namespace transfer_store_detail
 
-template <typename NodeID, typename EdgeMeta, std::size_t StripeCount = 1024, bool ThreadSafe = true>
+template <typename NodeID, typename EdgeMeta, std::size_t StripeCount = 256, bool ThreadSafe = true>
 class TransferStore final : public ITransferStore<NodeID, EdgeMeta> {
 public:
     using Base = ITransferStore<NodeID, EdgeMeta>;
