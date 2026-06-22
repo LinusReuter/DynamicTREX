@@ -377,19 +377,55 @@ inline void ComputeStopEventGraphRouteBased(TripBased::Data& data, const int num
     progress.finished();
 }
 
-inline void ComputeFullStopEventGraph(TripBased::Data& data) noexcept {
+inline void ComputeFullStopEventGraph(TripBased::Data& data, const int numberOfThreads,
+                                      const int pinMultiplier = 1) noexcept {
     Progress progress(data.numberOfTrips());
+    SimpleEdgeList stopEventGraph;
+    stopEventGraph.addVertices(data.numberOfStopEvents());
 
-    StopEventGraphBuilder builder(data, false);
+    const int numCores = numberOfCores();
+    std::atomic<size_t> totalEdges{0};
 
-    for (const TripId trip : data.trips()) {
-        builder.generateFullTransfers(trip);
-        progress++;
+    omp_set_num_threads(numberOfThreads);
+#pragma omp parallel
+    {
+        int threadId = omp_get_thread_num();
+        pinThreadToCoreId((threadId * pinMultiplier) % numCores);
+        AssertMsg(omp_get_num_threads() == numberOfThreads,
+                  "Number of threads is " << omp_get_num_threads() << ", but should be " << numberOfThreads << "!");
+
+        // Set clearGeneratedTransfers = false matching the original full graph behavior
+        StopEventGraphBuilder builder(data, false);
+        const size_t numberOfTrips = data.numberOfTrips();
+
+#pragma omp for schedule(dynamic, 1)
+        for (size_t i = 0; i < numberOfTrips; i++) {
+            const TripId trip = TripId(i);
+            builder.generateFullTransfers(trip);
+            progress++;
+        }
+
+        const size_t localEdges = builder.getGeneratedStopEventGraph().numEdges();
+        totalEdges.fetch_add(localEdges, std::memory_order_relaxed);
+
+#pragma omp barrier
+
+#pragma omp single
+        {
+            stopEventGraph.reserve(stopEventGraph.numVertices(), totalEdges.load());
+        }
+
+#pragma omp critical
+{
+    // Collect from getGeneratedStopEventGraph() instead of getStopEventGraph()
+    for (const auto [edge, from] : builder.getGeneratedStopEventGraph().edgesWithFromVertex()) {
+        stopEventGraph.addEdge(from, builder.getGeneratedStopEventGraph().get(ToVertex, edge));
+    }
+}
     }
 
-    Graph::move(std::move(builder.getGeneratedStopEventGraph()), data.stopEventGraph);
+    Graph::move(std::move(stopEventGraph), data.stopEventGraph);
     data.stopEventGraph.sortEdges(ToVertex);
-
     progress.finished();
 }
 

@@ -396,6 +396,8 @@ public:
         addParameter("Min delay (seconds)", "60");
         addParameter("Max delay (seconds)", "600");
         addParameter("Max skipped stops per trip", "1");
+        addParameter("Number of threads", "max");
+        addParameter("Pin multiplier", "1");
     }
 
     virtual void execute() noexcept override {
@@ -413,7 +415,9 @@ public:
         cfg.delays.minInitialDelay = Time(getParameter<int>("Min delay (seconds)"));
         cfg.delays.maxInitialDelay = Time(getParameter<int>("Max delay (seconds)"));
         cfg.skips.maxSkippedStopsPerTrip = getParameter<int>("Max skipped stops per trip");
+        const int pinMultiplier = getParameter<int>("Pin multiplier");
 
+        const int numberOfThreads = getNumberOfThreads();
         using TransferMeta = DynamicTB::Preprocessing::TransferMeta;
         using TransferStoreType = TransferStore<PersistentStopEventId, TransferMeta>;
 
@@ -445,7 +449,7 @@ public:
         std::cout << "Initial dynamic full transfer store built in " << duration << std::endl;
 
         std::cout << "Exporting initial dynamic full transfers..." << std::endl;
-        const TripBased::Transfers initialDynamicTransfers = transferUpdater.exportFullTransfers(queryData);
+        const TripBased::Transfers initialDynamicTransfers = transferUpdater.exportFullTransfers(queryData, numberOfThreads);
         std::cout << "  Dynamic exported edges: " << initialDynamicTransfers.labels.size() << std::endl;
 
         std::cout << "Validate base transerfs:" << std::endl;
@@ -456,7 +460,7 @@ public:
         TripBased::Data staticTripData(raptorData);
 
         start = std::chrono::high_resolution_clock::now();
-        TripBased::ComputeFullStopEventGraph(staticTripData);
+        TripBased::ComputeFullStopEventGraph(staticTripData, numberOfThreads, pinMultiplier);
         stop = std::chrono::high_resolution_clock::now();
 
         duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
@@ -496,7 +500,7 @@ public:
         }
 
         std::cout << "Exporting incrementally updated full transfers..." << std::endl;
-        const TripBased::Transfers incrementalTransfers = transferUpdater.exportFullTransfers(updatedQueryData);
+        const TripBased::Transfers incrementalTransfers = transferUpdater.exportFullTransfers(updatedQueryData, numberOfThreads);
         std::cout << "  Incremental exported edges: " << incrementalTransfers.labels.size() << std::endl;
 
         std::cout << "Rebuilding full transfer store from updated timetable..." << std::endl;
@@ -510,7 +514,7 @@ public:
         std::cout << "Updated full transfer rebuild finished in " << duration << std::endl;
 
         std::cout << "Exporting rebuilt full transfers..." << std::endl;
-        const TripBased::Transfers rebuiltTransfers = rebuildUpdater.exportFullTransfers(updatedQueryData);
+        const TripBased::Transfers rebuiltTransfers = rebuildUpdater.exportFullTransfers(updatedQueryData, numberOfThreads);
         std::cout << "  Rebuilt exported edges: " << rebuiltTransfers.labels.size() << std::endl;
 
         std::cout << "\nUpdated-state comparison: incremental export vs full rebuild export" << std::endl;
@@ -560,6 +564,15 @@ public:
             std::cout << "    " << modifiedEvent << std::endl;
         }
     }
+
+private:
+    inline int getNumberOfThreads() const noexcept {
+        if (getParameter("Number of threads") == "max") {
+            return numberOfCores();
+        } else {
+            return getParameter<int>("Number of threads");
+        }
+    }
 };
 
 class SimulateAndCompareTransferUpdates : public ParameterizedCommand {
@@ -584,6 +597,8 @@ public:
         addParameter("Min delay (seconds)", "60");
         addParameter("Max delay (seconds)", "600");
         addParameter("Max skipped stops per trip", "1");
+        addParameter("Number of threads", "max");
+        addParameter("Pin multiplier", "1");
     }
 
     virtual void execute() noexcept override {
@@ -604,6 +619,7 @@ public:
         cfg.delays.maxInitialDelay = Time(getParameter<int>("Max delay (seconds)"));
         cfg.skips.maxSkippedStopsPerTrip = getParameter<int>("Max skipped stops per trip");
 
+        auto pinMultiplier = getParameter<int>("Pin multiplier");
         using TransferMeta = DynamicTB::Preprocessing::TransferMeta;
         using TransferStoreType = TransferStore<PersistentStopEventId, TransferMeta>;
 
@@ -625,7 +641,7 @@ public:
         baseTransferUpdater.buildInitialFullTransfers(baseQueryData);
 
         std::cout << "Validate base transerfs:" << std::endl;
-        TripBased::Transfers initialDynamicTransfers = baseTransferUpdater.exportFullTransfers(baseQueryData);
+        TripBased::Transfers initialDynamicTransfers = baseTransferUpdater.exportFullTransfers(baseQueryData, getNumberOfThreads());
         validateTransfers(initialDynamicTransfers, baseQueryData.queryData);
 
         std::cout << "Serializing baseline store to disk..." << std::endl;
@@ -664,13 +680,13 @@ public:
             const DynamicTimeTable::ChangeSummary& changes = dynamicTimeTableCopy.getLatestChanges();
 
             transferUpdater.applyFullUpdates(changes, updatedQueryData);
-            TripBased::Transfers incrementalTransfers = transferUpdater.exportFullTransfers(updatedQueryData);
+            TripBased::Transfers incrementalTransfers = transferUpdater.exportFullTransfers(updatedQueryData, getNumberOfThreads());
 
             // Rebuild from scratch to evaluate convergence
             TransferStoreType rebuildStore;
             DynamicTB::Preprocessing::TransferUpdate rebuildUpdater(rebuildStore);
             rebuildUpdater.buildInitialFullTransfers(updatedQueryData);
-            const TripBased::Transfers rebuiltTransfers = rebuildUpdater.exportFullTransfers(updatedQueryData);
+            const TripBased::Transfers rebuiltTransfers = rebuildUpdater.exportFullTransfers(updatedQueryData, getNumberOfThreads());
 
             outFile << "=== Iteration: " << (i + 1) << " | Seed: " << currentSeed << " ===\n";
             outFile << "Incremental edges: " << incrementalTransfers.labels.size()
@@ -735,6 +751,16 @@ public:
 
         if (!divergenceFound) {
             std::cout << "\nAll iterations completed successfully. No transfer divergences found." << std::endl;
+        }
+    }
+
+
+private:
+    inline int getNumberOfThreads() const noexcept {
+        if (getParameter("Number of threads") == "max") {
+            return numberOfCores();
+        } else {
+            return getParameter<int>("Number of threads");
         }
     }
 };

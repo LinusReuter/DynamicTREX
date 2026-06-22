@@ -478,6 +478,10 @@ public:
     void reserve_outgoing(NodeID node, std::size_t n) override { out_[node].reserve(n); }
     void reserve_incoming(NodeID node, std::size_t n) override { in_[node].reserve(n); }
 
+    int out_degree(NodeID node_id) override {
+        return out_[node_id].size();
+    }
+
     template<typename... Args>
     static void log(Args&&... args) {
         if constexpr (logging) {

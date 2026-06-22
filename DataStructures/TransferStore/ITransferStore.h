@@ -10,9 +10,11 @@
 /// - Adjacency views are sorted by neighbor ID and contain unique entries
 /// - Incoming/outgoing may be temporarily unsynchronized until `sync_barrier()`
 /// Usage
-/// - **Init (full rebuild):** `begin_outgoing_init(maxNodeId)` → clear outgoing → `add_outgoing_edges_init(...)` → `finish_outgoing_init()`
+/// - **Init (full rebuild):** `begin_outgoing_init(maxNodeId)` → clear outgoing → `add_outgoing_edges_init(...)` →
+/// `finish_outgoing_init()`
 /// - **Phase 0 Removed lines:** `allowTemporaryInconsistent(true)` → apply clears → `sync_barrier()`
-/// - **Phase 1 Trip cancellation:** same pattern; redirections only add new edges not touching any cancelled Event, async allowed
+/// - **Phase 1 Trip cancellation:** same pattern; redirections only add new edges not touching any cancelled Event,
+/// async allowed
 /// - **Barrier**
 /// - **Phase 2 Outgoing:** update outgoing with temporary inconsistency enabled → `sync_barrier()`
 /// - **Phase 3 Incoming:** update incoming with temporary inconsistency enabled → `sync_barrier()`
@@ -161,6 +163,8 @@ public:
     // === Optional performance hooks (no-ops by default) ===
     virtual void reserve_outgoing(NodeID, std::size_t) {}
     virtual void reserve_incoming(NodeID, std::size_t) {}
+
+    virtual int out_degree(NodeID node_id) = 0;
 
     virtual std::unordered_map<u_int64_t, u_int64_t> edgeDegreeDistrebutionOut() const noexcept = 0;
     virtual std::unordered_map<u_int64_t, u_int64_t> edgeDegreeDistrebutionIn() const noexcept = 0;
