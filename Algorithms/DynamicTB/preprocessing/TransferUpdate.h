@@ -408,7 +408,6 @@ private:
         }
 
         std::ranges::sort(out.begin(), out.end());
-        out.erase(std::unique(out.begin(), out.end()), out.end());
     }
 
     /// Compute all feasible incoming transfers to a single stop event.
@@ -527,7 +526,6 @@ private:
         }
 
         std::ranges::sort(out.begin(), out.end());
-        out.erase(std::unique(out.begin(), out.end()), out.end());
     }
 
     /// Expand a stop into itself + footpath neighbors with transfer time.
