@@ -60,7 +60,8 @@ struct ChangeSummary {
 
     // Discovery Triggers - In-Place Modifications
     // Events that were delayed/modified but the trip stayed in its original route.
-    std::vector<PersistentStopEventId> modifiedEvents;
+    // Paired with bool marking departure has negative delay (earlier)
+    std::vector<std::pair<PersistentStopEventId, bool>> modifiedEvents;
 
     // MINIMIZATION: Upstream Impact
     // If a trip's arrival times were delayed, transfers pointing INTO it

@@ -152,6 +152,7 @@ private:
 
                 PersistentStopEvent& e = data.events_[eventId];
                 const Time oldArr = e.arrivalTime;
+                const Time oldDep = e.departureTime;
 
                 if (m.newArrivalTime != noTime) e.arrivalTime = m.newArrivalTime;
                 if (m.newDepartureTime != noTime) e.departureTime = m.newDepartureTime;
@@ -165,8 +166,8 @@ private:
                 }
 
                 if (e.arrivalTime > oldArr) delayedArrivals = true;
-
-                context.summary.modifiedEvents.push_back(eventId);
+                bool earlier_departure = e.departureTime < oldDep;
+                context.summary.modifiedEvents.emplace_back(eventId, earlier_departure);
             }
 
             if (delayedArrivals) {

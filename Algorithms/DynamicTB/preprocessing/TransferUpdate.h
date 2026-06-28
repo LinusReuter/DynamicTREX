@@ -142,8 +142,21 @@ public:
             toDiscoverOutgoing.append_range(queryData_->getEventsOfTrip(pTrip));
             toDiscoverIncoming.append_range(queryData_->getEventsOfTrip(pTrip));
         }
-        toDiscoverOutgoing.append_range(changes.modifiedEvents);
-        toDiscoverIncoming.append_range(changes.modifiedEvents);
+        toDiscoverOutgoing.append_range(std::views::keys(changes.modifiedEvents));
+        toDiscoverIncoming.append_range(std::views::keys(changes.modifiedEvents));
+        for (auto change : changes.modifiedEvents) {
+            if (change.second) {
+                auto flatEvent = queryData_->persistentToFlatEvent[change.first];
+                auto flatTrip = queryData_->queryData.tripOfStopEvent[flatEvent];
+                auto flatRoute = queryData_->queryData.routeOfTrip[flatTrip];
+                if (flatRoute == queryData_->queryData.routeOfTrip[flatTrip +1]) {
+                    auto numStops =  queryData_->queryData.firstStopEventOfTrip[flatTrip -1] - queryData_->queryData.firstStopEventOfTrip[flatTrip];
+                    auto nextPEvent = queryData_->flatToPersistentEvent[flatEvent + numStops];
+                    toDiscoverIncoming.emplace_back(nextPEvent);
+                }
+
+            }
+        }
 
         // Sort and ensure uniqueness of toDiscoverSets
         std::sort(toDiscoverOutgoing.begin(), toDiscoverOutgoing.end());

@@ -561,7 +561,7 @@ public:
         }
         std::cout << "  Modified events: " << std::endl;
         for (const auto& modifiedEvent : changes.modifiedEvents) {
-            std::cout << "    " << modifiedEvent << std::endl;
+            std::cout << "    " << modifiedEvent.first << std::endl;
         }
     }
 
@@ -737,7 +737,7 @@ public:
                 }
                 std::cout << "  Modified events: " << std::endl;
                 for (const auto& modifiedEvent : changes.modifiedEvents) {
-                    std::cout << "    " << modifiedEvent << std::endl;
+                    std::cout << "    " << modifiedEvent.first << std::endl;
                 }
 
                 std::cout.rdbuf(coutBuf);
