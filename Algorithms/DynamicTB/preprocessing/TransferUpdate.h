@@ -1,11 +1,12 @@
 #pragma once
 
+#include <omp.h>
+
 #include <cstddef>
 #include <optional>
 #include <span>
 #include <utility>
 #include <vector>
-#include <omp.h>
 
 #include "../../../DataStructures/DynamicTimeTable/UpdateTypes.h"
 #include "../../../DataStructures/TransferStore/ITransferStore.h"
@@ -20,6 +21,24 @@ namespace DynamicTB::Preprocessing {
  */
 struct TransferMeta {
     bool isMinimized{false};  // true if kept by minimization
+};
+
+// Thread-local label structure matching StopEventGraphBuilder logic
+struct StopLabel {
+    int arrivalTime{std::numeric_limits<int>::max()};
+    int timestamp{0};
+
+    inline void checkTimestamp(const int newTimestamp) noexcept {
+        if (timestamp != newTimestamp) {
+            arrivalTime = std::numeric_limits<int>::max();
+            timestamp = newTimestamp;
+        }
+    }
+
+    inline void update(const int newTimestamp, const int newArrivalTime) noexcept {
+        checkTimestamp(newTimestamp);
+        arrivalTime = std::min(arrivalTime, newArrivalTime);
+    }
 };
 
 /**
@@ -111,7 +130,8 @@ public:
      * - Phase 2: allowTemporaryInconsistent(true) -> outgoing discovery -> sync_barrier()
      * - Phase 3: allowTemporaryInconsistent(true) -> incoming discovery -> sync_barrier()
      */
-    void applyFullUpdates(const DynamicTimeTable::ChangeSummary& changes, const DynamicQueryData& queryData) {
+    void applyFullUpdates(const DynamicTimeTable::ChangeSummary& changes, const DynamicQueryData& queryData,
+                          const int numberOfThreads) {
         queryData_ = &queryData;
 
         const std::size_t eventCount = queryData_->persistentToFlatEvent.size();
@@ -122,6 +142,9 @@ public:
 
         const NodeID maxEventId = NodeID(eventCount - 1);
         store_.add_nodes(maxEventId);
+        std::ranges::fill(tripsMarked, false);
+        tripsMarked.resize(queryData.queryData.routeOfTrip.size());
+        tripsToMinimize.clear();
 
         std::vector<PersistentStopEventId> toDiscoverOutgoing;
         std::vector<PersistentStopEventId> toDiscoverIncoming;
@@ -132,7 +155,8 @@ public:
 
         // Collect Discovery Vectors:
         toDiscoverOutgoing.reserve(changes.addedTrips.size() + changes.modifiedEvents.size());
-        toDiscoverIncoming.reserve(changes.addedTrips.size() + changes.modifiedEvents.size() + changes.tripsToRediscoverIncomingDueToCancellation.size());
+        toDiscoverIncoming.reserve(changes.addedTrips.size() + changes.modifiedEvents.size() +
+                                   changes.tripsToRediscoverIncomingDueToCancellation.size());
 
         for (const auto pTrip : changes.tripsToRediscoverIncomingDueToCancellation) {
             toDiscoverIncoming.append_range(queryData_->getEventsOfTrip(pTrip));
@@ -149,21 +173,21 @@ public:
                 auto flatEvent = queryData_->persistentToFlatEvent[change.first];
                 auto flatTrip = queryData_->queryData.tripOfStopEvent[flatEvent];
                 auto flatRoute = queryData_->queryData.routeOfTrip[flatTrip];
-                if (flatRoute == queryData_->queryData.routeOfTrip[flatTrip +1]) {
-                    auto numStops =  queryData_->queryData.firstStopEventOfTrip[flatTrip -1] - queryData_->queryData.firstStopEventOfTrip[flatTrip];
+                if (flatRoute == queryData_->queryData.routeOfTrip[flatTrip + 1]) {
+                    auto numStops = queryData_->queryData.firstStopEventOfTrip[flatTrip - 1] -
+                                    queryData_->queryData.firstStopEventOfTrip[flatTrip];
                     auto nextPEvent = queryData_->flatToPersistentEvent[flatEvent + numStops];
                     toDiscoverIncoming.emplace_back(nextPEvent);
                 }
-
             }
         }
 
         // Sort and ensure uniqueness of toDiscoverSets
-        std::sort(toDiscoverOutgoing.begin(), toDiscoverOutgoing.end());
-        toDiscoverOutgoing.erase(std::unique(toDiscoverOutgoing.begin(), toDiscoverOutgoing.end()), toDiscoverOutgoing.end());
+        std::ranges::sort(toDiscoverOutgoing);
+        toDiscoverOutgoing.erase(std::ranges::unique(toDiscoverOutgoing).begin(), toDiscoverOutgoing.end());
 
-        std::sort(toDiscoverIncoming.begin(), toDiscoverIncoming.end());
-        toDiscoverIncoming.erase(std::unique(toDiscoverIncoming.begin(), toDiscoverIncoming.end()), toDiscoverIncoming.end());
+        std::ranges::sort(toDiscoverIncoming);
+        toDiscoverIncoming.erase(std::ranges::unique(toDiscoverIncoming).begin(), toDiscoverIncoming.end());
 
         // Outgoing Phase
         for (const auto event : toDiscoverOutgoing) {
@@ -172,21 +196,52 @@ public:
         store_.sync_barrier();
 
         // Incoming Phase
-        // #TODO: When updates cause earlier departure incoming discovey on pedecessor event needed?
         for (const auto event : toDiscoverIncoming) {
             updateIncomingForEvent(event);
         }
         store_.sync_barrier();
         store_.allowTemporaryInconsistent(false);
 
-        // TODO minimization
+        // minimization
+
+        for (PersistentTripId delayedTrip : changes.tripsWithDelayedArrivals) {
+            for (auto event : queryData_->getEventsOfTrip(delayedTrip)) {
+                for (auto from : store_.incoming_sorted(event)) {
+                    TripId sourceTrip = queryData_->queryData.tripOfStopEvent[queryData_->persistentToFlatEvent[from]];
+
+                    markTrip(queryData_->flatToPersistentTrip[sourceTrip]);
+                }
+            }
+        }
+
+        std::ranges::sort(tripsToMinimize);
+        updateMinimizedTransfers(tripsToMinimize, queryData, numberOfThreads);
     }
 
     /**
      * Full rebuild of minimization flags for ALL trips.
      * Requires that the FULL set is already present in the store.
      */
-    void buildInitialMinimizedTransfers(const DynamicQueryData& queryData);
+    void buildInitialMinimizedTransfers(const DynamicQueryData& queryData, const int numberOfThreads) {
+        queryData_ = &queryData;
+        const auto& qd = queryData_->queryData;
+        const std::size_t numTrips = qd.routeOfTrip.size() - 1;
+        const std::size_t numStops = qd.firstRouteSegmentOfStop.size() - 1;
+
+        omp_set_num_threads(numberOfThreads);
+
+#pragma omp parallel
+        {
+            // Thread-local lookup structures to avoid data-races
+            std::vector localLabels(numStops, StopLabel());
+            int localTimestamp = 0;
+
+#pragma omp for schedule(dynamic, 1)
+            for (std::size_t i = 0; i < numTrips; ++i) {
+                reduceTransfersForTrip(TripId(i), localLabels, localTimestamp);
+            }
+        }
+    }
 
     /**
      * Incremental minimization re-run for a set of trips.
@@ -199,7 +254,27 @@ public:
      *   but only if a removed edge had isMinimized=true.
      * - Any source trip that transfers into a trip with delayed arrivals (downstream timing change).
      */
-    void updateMinimizedTransfers(const std::vector<PersistentTripId>& trips, const DynamicQueryData& queryData);
+    void updateMinimizedTransfers(const std::vector<PersistentTripId>& trips, const DynamicQueryData& queryData,
+                                  const int numberOfThreads) {
+        queryData_ = &queryData;
+        const auto& qd = queryData_->queryData;
+        const std::size_t numStops = qd.firstRouteSegmentOfStop.size() - 1;
+
+        omp_set_num_threads(numberOfThreads);
+
+#pragma omp parallel
+        {
+            // Thread-local lookup structures to avoid data-races
+            std::vector localLabels(numStops, StopLabel());
+            int localTimestamp = 0;
+
+#pragma omp for schedule(dynamic, 1)
+            for (PersistentTripId trip : trips) {
+                const auto fTrip = queryData_->persistentToFlatTrip[trip];
+                reduceTransfersForTrip(fTrip, localLabels, localTimestamp);
+            }
+        }
+    }
 
     // === Transfer Set Export ===
 
@@ -208,60 +283,129 @@ public:
     /// The exported graph uses flat stop-event ids as vertices, matching
     /// TripBased::Transfers. Persistent ids from the dynamic store are translated
     /// through DynamicQueryData. Invalid/removed persistent events are skipped.
-    [[nodiscard]] TripBased::Transfers exportFullTransfers(const DynamicQueryData& queryData, const int numberOfThreads) const {
-    const auto& qd = queryData.queryData;
-    const std::size_t flatEventCount = qd.eventLookup.size();
-    const std::size_t persistentCount = queryData.persistentToFlatEvent.size();
+    [[nodiscard]] TripBased::Transfers exportFullTransfers(const DynamicQueryData& queryData,
+                                                           const int numberOfThreads) const {
+        const auto& qd = queryData.queryData;
+        const std::size_t flatEventCount = qd.eventLookup.size();
+        const std::size_t persistentCount = queryData.persistentToFlatEvent.size();
 
-    std::vector<Edge> beginOut(flatEventCount + 1, Edge(0));
+        std::vector<Edge> beginOut(flatEventCount + 1, Edge(0));
 
-    omp_set_num_threads(numberOfThreads);
+        omp_set_num_threads(numberOfThreads);
 
-    // Pass 1: Directly map out-degrees to the flat event indices in parallel
-    #pragma omp parallel for schedule(static)
-    for (std::size_t pFrom = 0; pFrom < persistentCount; ++pFrom) {
-        const StopEventId flatFrom = queryData.persistentToFlatEvent[pFrom];
-        if (flatFrom == noStopEvent) continue;
+// Pass 1: Directly map out-degrees to the flat event indices in parallel
+#pragma omp parallel for schedule(static)
+        for (std::size_t pFrom = 0; pFrom < persistentCount; ++pFrom) {
+            const StopEventId flatFrom = queryData.persistentToFlatEvent[pFrom];
+            if (flatFrom == noStopEvent) continue;
 
-        // Using store_.out_degree() directly maps the size without looping
-        beginOut[static_cast<std::size_t>(flatFrom) + 1] = Edge(store_.out_degree(NodeID(pFrom)));
-    }
-
-    // Pass 2: Sequential Prefix Sum
-    for (std::size_t i = 1; i < beginOut.size(); ++i) {
-        beginOut[i] = Edge(beginOut[i] + beginOut[i - 1]);
-    }
-
-    // Allocate the labels and times directly based on total edges
-    const std::size_t edgeCount = beginOut.back();
-    std::vector<TripBased::EdgeLabel> labels(edgeCount);
-    std::vector<int> travelTime(edgeCount);
-
-    // Pass 3: Populate arrays in parallel
-    #pragma omp parallel for schedule(dynamic, 1024)
-    for (std::size_t pFrom = 0; pFrom < persistentCount; ++pFrom) {
-        const StopEventId flatFrom = queryData.persistentToFlatEvent[pFrom];
-        if (flatFrom == noStopEvent) continue;
-
-        const Time fromArrivalTime = Time(qd.eventArrTimes[flatFrom]);
-        Edge currentEdgeOffset = beginOut[flatFrom];
-
-        for (const auto& [to, meta] : store_.outgoing_sorted(NodeID(pFrom))) {
-            const StopEventId flatTo = queryData.persistentToFlatEvent[to];
-
-            const Edge exportEdge = currentEdgeOffset++;
-            const TripId trip = qd.tripOfStopEvent[flatTo];
-            const StopEventId firstEvent = qd.firstStopEventOfTrip[trip];
-
-            labels[exportEdge].init(flatTo, trip, firstEvent);
-            travelTime[exportEdge] = static_cast<int>(Time(qd.eventDepTimes[flatTo]) - fromArrivalTime);
+            // Using store_.out_degree() directly maps the size without looping
+            beginOut[static_cast<std::size_t>(flatFrom) + 1] = Edge(store_.out_degree(NodeID(pFrom)));
         }
+
+        // Pass 2: Sequential Prefix Sum
+        for (std::size_t i = 1; i < beginOut.size(); ++i) {
+            beginOut[i] = Edge(beginOut[i] + beginOut[i - 1]);
+        }
+
+        // Allocate the labels and times directly based on total edges
+        const std::size_t edgeCount = beginOut.back();
+        std::vector<TripBased::EdgeLabel> labels(edgeCount);
+        std::vector<int> travelTime(edgeCount);
+
+// Pass 3: Populate arrays in parallel
+#pragma omp parallel for schedule(dynamic, 1024)
+        for (std::size_t pFrom = 0; pFrom < persistentCount; ++pFrom) {
+            const StopEventId flatFrom = queryData.persistentToFlatEvent[pFrom];
+            if (flatFrom == noStopEvent) continue;
+
+            const Time fromArrivalTime = Time(qd.eventArrTimes[flatFrom]);
+            Edge currentEdgeOffset = beginOut[flatFrom];
+
+            for (const auto& [to, meta] : store_.outgoing_sorted(NodeID(pFrom))) {
+                const StopEventId flatTo = queryData.persistentToFlatEvent[to];
+
+                const Edge exportEdge = currentEdgeOffset++;
+                const TripId trip = qd.tripOfStopEvent[flatTo];
+                const StopEventId firstEvent = qd.firstStopEventOfTrip[trip];
+
+                labels[exportEdge].init(flatTo, trip, firstEvent);
+                travelTime[exportEdge] = static_cast<int>(Time(qd.eventDepTimes[flatTo]) - fromArrivalTime);
+            }
+        }
+
+        return {std::move(beginOut), std::move(labels), std::move(travelTime)};
     }
 
-    return {std::move(beginOut), std::move(labels), std::move(travelTime)};
-}
+    /// Export the current reduced transfer set in the compact TripBased query layout.
+    ///
+    /// The exported graph uses flat stop-event ids as vertices, matching
+    /// TripBased::Transfers. Persistent ids from the dynamic store are translated
+    /// through DynamicQueryData. Invalid/removed persistent events are skipped.
+    [[nodiscard]] TripBased::Transfers exportReducedTransfers(const DynamicQueryData& queryData,
+                                                              const int numberOfThreads) const {
+        const auto& qd = queryData.queryData;
+        const std::size_t flatEventCount = qd.eventLookup.size();
+        const std::size_t persistentCount = queryData.persistentToFlatEvent.size();
 
-    // Export Minimized Transfers
+        std::vector<Edge> beginOut(flatEventCount + 1, Edge(0));
+
+        omp_set_num_threads(numberOfThreads);
+
+// Pass 1: Count only minimized outgoing transfers
+#pragma omp parallel for schedule(dynamic, 1024)
+        for (std::size_t pFrom = 0; pFrom < persistentCount; ++pFrom) {
+            const StopEventId flatFrom = queryData.persistentToFlatEvent[pFrom];
+            if (flatFrom == noStopEvent) continue;
+
+            Edge degree = Edge(0);
+            for (const auto& [to, meta] : store_.outgoing_sorted(NodeID(pFrom))) {
+                if (!meta.isMinimized) continue;
+
+                if (queryData.persistentToFlatEvent[to] == noStopEvent) continue;
+                ++degree;
+            }
+
+            beginOut[static_cast<std::size_t>(flatFrom) + 1] = degree;
+        }
+
+        // Pass 2: Prefix sum
+        for (std::size_t i = 1; i < beginOut.size(); ++i) {
+            beginOut[i] += beginOut[i - 1];
+        }
+
+        // Allocate output arrays
+        const std::size_t edgeCount = beginOut.back();
+        std::vector<TripBased::EdgeLabel> labels(edgeCount);
+        std::vector<int> travelTime(edgeCount);
+
+// Pass 3: Export only minimized transfers
+#pragma omp parallel for schedule(dynamic, 1024)
+        for (std::size_t pFrom = 0; pFrom < persistentCount; ++pFrom) {
+            const StopEventId flatFrom = queryData.persistentToFlatEvent[pFrom];
+            if (flatFrom == noStopEvent) continue;
+
+            const Time fromArrivalTime = Time(qd.eventArrTimes[flatFrom]);
+            Edge currentEdgeOffset = beginOut[flatFrom];
+
+            for (const auto& [to, meta] : store_.outgoing_sorted(NodeID(pFrom))) {
+                if (!meta.isMinimized) continue;
+
+                const StopEventId flatTo = queryData.persistentToFlatEvent[to];
+                if (flatTo == noStopEvent) continue;
+
+                const Edge exportEdge = currentEdgeOffset++;
+
+                const TripId trip = qd.tripOfStopEvent[flatTo];
+                const StopEventId firstEvent = qd.firstStopEventOfTrip[trip];
+
+                labels[exportEdge].init(flatTo, trip, firstEvent);
+                travelTime[exportEdge] = static_cast<int>(Time(qd.eventDepTimes[flatTo]) - fromArrivalTime);
+            }
+        }
+
+        return {std::move(beginOut), std::move(labels), std::move(travelTime)};
+    }
 
 private:
     // === Full-set phase orchestration ===
@@ -278,7 +422,9 @@ private:
     }
 
     /// Update outgoing transfers for newly added or reinserted trips.
-    void processAddedTrips(const std::vector<PersistentTripId>& trips, std::vector<PersistentStopEventId>& toDiscoverOutgoing, std::vector<PersistentStopEventId>& toDiscoverIncoming) const {
+    void processAddedTrips(const std::vector<PersistentTripId>& trips,
+                           std::vector<PersistentStopEventId>& toDiscoverOutgoing,
+                           std::vector<PersistentStopEventId>& toDiscoverIncoming) const {
         for (const auto pTrip : trips) {
             toDiscoverOutgoing.append_range(queryData_->getEventsOfTrip(pTrip));
             toDiscoverIncoming.append_range(queryData_->getEventsOfTrip(pTrip));
@@ -295,7 +441,7 @@ private:
     /// Requires a valid arrival time (constraints are modeled as invalid times),
     /// and must enforce U-turn filtering + max-wait cap.
     /// Uses an outgoing batch (Direction::Outgoing) to apply the diff.
-    void updateOutgoingForEvent(PersistentStopEventId event) const {
+    void updateOutgoingForEvent(PersistentStopEventId event) {
         std::vector<PersistentStopEventId> desired;
         computeOutgoingTransfers(event, desired);
         applyOutgoingDiff(event, desired);
@@ -307,7 +453,7 @@ private:
     /// and must enforce U-turn filtering + max-wait cap.
     /// New edges get isMinimized=false; existing edges preserve metadata.
     /// When new transfers are inserted, trigger domination cleanup on the target line.
-    void updateIncomingForEvent(PersistentStopEventId event) const {
+    void updateIncomingForEvent(PersistentStopEventId event) {
         std::vector<PersistentStopEventId> desired;
         computeIncomingTransfers(event, desired);
         applyIncomingDiff(event, desired);
@@ -421,7 +567,7 @@ private:
         const auto& qd = queryData_->queryData;
         TripId toTrip = qd.tripOfStopEvent[flatToEvent];
         // Can't transfer to the last stop of a trip
-        if (flatToEvent == (qd.firstStopEventOfTrip[toTrip + 1] -1)) return;
+        if (flatToEvent == (qd.firstStopEventOfTrip[toTrip + 1] - 1)) return;
         RouteId toRoute = qd.routeOfTrip[toTrip];
         StopIndex toIndex = stopIndexOfEvent(toEvent);
         StopId toStop = stopOfEvent(toEvent);
@@ -455,11 +601,11 @@ private:
             Time footPathTime;
         };
         std::vector<SourceSegment> sources;
-        sources.reserve(connectedStops.size() * 4); // Heuristic allocation
+        sources.reserve(connectedStops.size() * 4);  // Heuristic allocation
 
         for (const auto& [q, footPathTime] : connectedStops) {
             for (const auto& segment : qd.routesContainingStop(q)) {
-                if (segment.stopIndex == StopIndex(0)) continue; // Can't transfer from the first stop of a trip
+                if (segment.stopIndex == StopIndex(0)) continue;  // Can't transfer from the first stop of a trip
                 sources.push_back({segment.routeId, segment.stopIndex, footPathTime});
             }
         }
@@ -512,7 +658,7 @@ private:
                 StopEventId ev = StopEventId(qd.firstStopEventOfTrip[t] + src.i);
                 int64_t arrTime = static_cast<int64_t>(qd.eventArrTimes[ev]);
 
-                if (arrTime > maxArr) break; // Window closed; later trips will arrive too late
+                if (arrTime > maxArr) break;  // Window closed; later trips will arrive too late
 
                 // Filter out U-Turns and same-route forward invalidities
                 if (src.route == toRoute && toTrip >= t && toIndex >= src.i) continue;
@@ -547,8 +693,8 @@ private:
     /// Assumes store_.outgoing_sorted(fromEvent) is sorted by `to` and unique.
     /// Persist TransferMeta for unchanged edges; new edges get isMinimized=false.
     /// Any add/remove marks the source trip for re-minimization.
-    inline void applyOutgoingDiff(PersistentStopEventId fromEvent,
-                                  std::span<const PersistentStopEventId> desired) const {
+    inline void applyOutgoingDiff(PersistentStopEventId fromEvent, std::span<const PersistentStopEventId> desired) {
+        bool reduce = false;
         auto batch = store_.begin_batch(fromEvent, Store::Direction::Outgoing);
 
         auto current_span = store_.outgoing_sorted(fromEvent);
@@ -558,9 +704,11 @@ private:
 
         while (curr_it != current_span.end() && des_it != desired.end()) {
             if (curr_it->to < *des_it) {
+                reduce = true;
                 store_.remove_outgoing_edge(batch, curr_it->to);
                 ++curr_it;
             } else if (curr_it->to > *des_it) {
+                reduce = true;
                 store_.add_outgoing_edge(batch, *des_it, TransferMeta{false});
                 ++des_it;
             } else {
@@ -570,16 +718,22 @@ private:
         }
 
         while (curr_it != current_span.end()) {
+            reduce = true;
             store_.remove_outgoing_edge(batch, curr_it->to);
             ++curr_it;
         }
 
         while (des_it != desired.end()) {
+            reduce = true;
             store_.add_outgoing_edge(batch, *des_it, TransferMeta{false});
             ++des_it;
         }
 
         store_.commit_batch(batch);
+        if (reduce) {
+            const TripId flatTrip = queryData_->queryData.tripOfStopEvent[queryData_->persistentToFlatEvent[fromEvent]];
+            markTrip(queryData_->flatToPersistentTrip[flatTrip]);
+        }
     }
 
     /// Apply the diff between current incoming edges and the desired set
@@ -587,7 +741,7 @@ private:
     /// Persist TransferMeta for unchanged edges; new edges get isMinimized=false.
     /// When a new edge is inserted, trigger domination cleanup.
     /// If a removed edge had isMinimized=true, mark the source trip for re-minimization.
-    void applyIncomingDiff(PersistentStopEventId toEvent, std::span<const PersistentStopEventId> desired) const {
+    void applyIncomingDiff(PersistentStopEventId toEvent, std::span<const PersistentStopEventId> desired) {
         auto batch = store_.begin_batch(toEvent, Store::Direction::Incoming);
 
         auto current_span = store_.incoming_sorted(toEvent);
@@ -603,6 +757,8 @@ private:
 
             if (currentFrom < desiredFrom) {
                 store_.remove_incoming_edge(batch, currentFrom);
+                TripId flatTrip = queryData_->queryData.tripOfStopEvent[queryData_->persistentToFlatEvent[currentFrom]];
+                markTrip(queryData_->flatToPersistentTrip[flatTrip]);
                 ++curr_it;
             } else if (currentFrom > desiredFrom) {
                 store_.add_incoming_edge(batch, desiredFrom, TransferMeta{false});
@@ -617,14 +773,9 @@ private:
         }
 
         while (curr_it != current_span.end()) {
-            // TransferMeta meta = store_.readEdgeMeta(currentFrom, toEvent);
             store_.remove_incoming_edge(batch, *curr_it);
-            // if (meta.isMinimized) {
-            //     StopEventId flatFromEvent = queryData_->persistentToFlatEvent[currentFrom];
-            //     TripId flatFromTrip = queryData_->queryData.tripOfStopEvent[flatFromEvent];
-            //     PersistentTripId pFromTrip = queryData_->flatToPersistentTrip[flatFromTrip];
-            //     // TODO: Mark source trip (pFromTrip) for re-minimization
-            // }
+            TripId flatTrip = queryData_->queryData.tripOfStopEvent[queryData_->persistentToFlatEvent[*curr_it]];
+            markTrip(queryData_->flatToPersistentTrip[flatTrip]);
             ++curr_it;
         }
 
@@ -640,6 +791,8 @@ private:
         // 4. Safely execute the nested outgoing batches for cleanup
         for (const auto& fromEvent : newlyInserted) {
             dominationCleanupForInsertedTransfer(fromEvent, toEvent);
+            TripId flatTrip = queryData_->queryData.tripOfStopEvent[queryData_->persistentToFlatEvent[fromEvent]];
+            markTrip(queryData_->flatToPersistentTrip[flatTrip]);
         }
     }
 
@@ -652,7 +805,7 @@ private:
         }
     }
 
-    [[nodiscard]] inline  Time getTransferDuration(const StopId from, const StopId to) const {
+    [[nodiscard]] inline Time getTransferDuration(const StopId from, const StopId to) const {
         if (from == to) return Time(0);
         const auto& tg = queryData_->queryData.transferGraph;
         for (const auto edge : tg.edgesFrom(from)) {
@@ -692,7 +845,7 @@ private:
      * @param fromEvent
      * @param toEvent
      */
-void dominationCleanupForInsertedTransfer(PersistentStopEventId fromEvent, PersistentStopEventId toEvent) const {
+    void dominationCleanupForInsertedTransfer(PersistentStopEventId fromEvent, PersistentStopEventId toEvent) {
         StopEventId flatToEvent = queryData_->persistentToFlatEvent[toEvent];
         if (flatToEvent == noStopEvent) return;
 
@@ -735,7 +888,9 @@ void dominationCleanupForInsertedTransfer(PersistentStopEventId fromEvent, Persi
                     store_.remove_edge(fromEvent, u2Event);
 
                     if (edge.meta.isMinimized) {
-                        // TODO: Mark source trip for re-minimization.
+                        TripId flatTrip =
+                            queryData_->queryData.tripOfStopEvent[queryData_->persistentToFlatEvent[fromEvent]];
+                        markTrip(queryData_->flatToPersistentTrip[flatTrip]);
                     }
                     break;
                 }
@@ -850,9 +1005,104 @@ void dominationCleanupForInsertedTransfer(PersistentStopEventId fromEvent, Persi
         return std::nullopt;
     }
 
+    void reduceTransfersForTrip(TripId flatTrip, std::vector<StopLabel>& localLabels, int& localTimestamp) {
+        const auto& qd = queryData_->queryData;
+        localTimestamp++;
+
+        int numStops = qd.firstStopEventOfTrip[flatTrip + 1] - qd.firstStopEventOfTrip[flatTrip];
+
+        // Scan backward from the destination stop down to the second stop (index 1)
+        for (int i = numStops - 1; i > 0; --i) {
+            StopEventId firstEvent = qd.firstStopEventOfTrip[flatTrip];
+            StopEventId flatFromEvent = StopEventId(firstEvent + i);
+
+            PersistentStopEventId pFromEvent = queryData_->flatToPersistentEvent[flatFromEvent];
+            if (!pFromEvent.isValid()) continue;
+
+            int arrivalTime = static_cast<int>(qd.eventArrTimes[flatFromEvent]);
+            StopId fromStop = qd.eventLookup[flatFromEvent].stop;
+
+            // 1. Update labels for the stop itself and its outgoing transfer/footpath neighbors
+            localLabels[fromStop].update(localTimestamp, arrivalTime);
+            for (const auto edge : qd.transferGraph.edgesFrom(fromStop)) {
+                StopId toStop = StopId(qd.transferGraph.get(ToVertex, edge));
+                int transferTime = qd.transferGraph.get(TravelTime, edge);
+                localLabels[toStop].update(localTimestamp, arrivalTime + transferTime);
+            }
+
+            // 2. Gather full unreduced candidates from the edge store
+            struct TransferCandidate {
+                PersistentStopEventId to;
+                StopEventId flatTo;
+                int destArrivalTime;
+            };
+
+            std::vector<TransferCandidate> candidates;
+            for (const auto& [to, meta] : store_.outgoing_sorted(NodeID(pFromEvent))) {
+                StopEventId flatTo = queryData_->persistentToFlatEvent[to];
+                if (flatTo == noStopEvent) continue;
+
+                int destArr = static_cast<int>(qd.eventArrTimes[flatTo]);
+                candidates.push_back({to, flatTo, destArr});
+            }
+
+            // 3. Sort candidates by destination arrival time matching the original reduction requirements
+            std::stable_sort(candidates.begin(), candidates.end(),
+                             [](const TransferCandidate& a, const TransferCandidate& b) {
+                                 return a.destArrivalTime < b.destArrivalTime;
+                             });
+
+            // 4. Domination profile filtering
+            std::vector<PersistentStopEventId> keepTransfers;
+            for (const auto& candidate : candidates) {
+                bool keep = false;
+                StopEventId flatToEvent = candidate.flatTo;
+                TripId toTrip = qd.tripOfStopEvent[flatToEvent];
+                StopEventId firstEventOfToTrip = qd.firstStopEventOfTrip[toTrip];
+                StopIndex toIndex = StopIndex(flatToEvent - firstEventOfToTrip);
+                size_t numStopsInToTrip = qd.firstStopEventOfTrip[toTrip + 1] - firstEventOfToTrip;
+
+                // Evaluate downstream stops on the target trip
+                for (size_t j = numStopsInToTrip - static_cast<size_t>(toIndex) - 1; j > 0; --j) {
+                    StopEventId destEvent = StopEventId(flatToEvent + j);
+                    StopId destinationStop = qd.eventLookup[destEvent].stop;
+                    int destinationArrivalTime = static_cast<int>(qd.eventArrTimes[destEvent]);
+
+                    localLabels[destinationStop].checkTimestamp(localTimestamp);
+                    if (localLabels[destinationStop].arrivalTime > destinationArrivalTime) {
+                        localLabels[destinationStop].arrivalTime = destinationArrivalTime;
+                        keep = true;
+                    }
+
+                    for (const auto edge : qd.transferGraph.edgesFrom(destinationStop)) {
+                        StopId arrivalStop = StopId(qd.transferGraph.get(ToVertex, edge));
+                        int transferTime = qd.transferGraph.get(TravelTime, edge);
+                        int arrivalTimeAtStop = destinationArrivalTime + transferTime;
+
+                        localLabels[arrivalStop].checkTimestamp(localTimestamp);
+                        if (localLabels[arrivalStop].arrivalTime > arrivalTimeAtStop) {
+                            localLabels[arrivalStop].arrivalTime = arrivalTimeAtStop;
+                            keep = true;
+                        }
+                    }
+                }
+                store_.update_edge_meta(pFromEvent, candidate.to, TransferMeta{keep});
+            }
+        }
+    }
+
+    inline void markTrip(const PersistentTripId trip) {
+        if (!tripsMarked[trip]) {
+            tripsMarked[trip] = true;
+            tripsToMinimize.push_back(trip);
+        }
+    }
+
 public:
     const DynamicQueryData* queryData_{nullptr};
     Store& store_;
+    std::vector<bool> tripsMarked;
+    std::vector<PersistentTripId> tripsToMinimize;
 };
 
 }  // namespace DynamicTB::Preprocessing

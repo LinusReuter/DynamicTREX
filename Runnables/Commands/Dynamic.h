@@ -335,7 +335,7 @@ public:
             DynamicTimeTable::Algo::UpdatePipeline::applyUpdates(dynamicTimeTable, updates);
         auto queryDataUpdated = DynamicTimeTable::Algo::DynamicQueryData::buildFromDynamic(dynamicTimeTable);
         const DynamicTimeTable::ChangeSummary& changes = dynamicTimeTable.getLatestChanges();
-        transferUpdater.applyFullUpdates(changes, queryDataUpdated);
+        transferUpdater.applyFullUpdates(changes, queryDataUpdated, 1);
         stop = std::chrono::high_resolution_clock::now();
         duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
 
@@ -488,7 +488,7 @@ public:
             DynamicTimeTable::Algo::UpdatePipeline::applyUpdates(dynamicTimeTable, updates);
         auto updatedQueryData = DynamicTimeTable::Algo::DynamicQueryData::buildFromDynamic(dynamicTimeTable);
         const DynamicTimeTable::ChangeSummary& changes = dynamicTimeTable.getLatestChanges();
-        transferUpdater.applyFullUpdates(changes, updatedQueryData);
+        transferUpdater.applyFullUpdates(changes, updatedQueryData, numberOfThreads);
         stop = std::chrono::high_resolution_clock::now();
         duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
         std::cout << "Incremental timetable + transfer update finished in " << duration << std::endl;
@@ -620,6 +620,7 @@ public:
         cfg.skips.maxSkippedStopsPerTrip = getParameter<int>("Max skipped stops per trip");
 
         auto pinMultiplier = getParameter<int>("Pin multiplier");
+        const int numberOfThreads = getNumberOfThreads();
         using TransferMeta = DynamicTB::Preprocessing::TransferMeta;
         using TransferStoreType = TransferStore<PersistentStopEventId, TransferMeta>;
 
@@ -679,7 +680,7 @@ public:
             auto updatedQueryData = DynamicTimeTable::Algo::DynamicQueryData::buildFromDynamic(dynamicTimeTableCopy);
             const DynamicTimeTable::ChangeSummary& changes = dynamicTimeTableCopy.getLatestChanges();
 
-            transferUpdater.applyFullUpdates(changes, updatedQueryData);
+            transferUpdater.applyFullUpdates(changes, updatedQueryData, numberOfThreads);
             TripBased::Transfers incrementalTransfers = transferUpdater.exportFullTransfers(updatedQueryData, getNumberOfThreads());
 
             // Rebuild from scratch to evaluate convergence
