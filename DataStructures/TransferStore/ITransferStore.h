@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <vector>
 
 /// Interface for DAG TransferStore.
 /// - Node IDs are sequential: 0..n-1
@@ -54,6 +55,18 @@ public:
 
     /// Incoming adjacency view for `to` (read-only sources only).
     virtual incoming_span incoming_unsorted(NodeID to) = 0;
+
+    /// Atomically copy the outgoing adjacency of `from` into `out` (cleared first).
+    /// Unlike outgoing_unsorted()/outgoing_sorted(), the returned data is a stable
+    /// snapshot: it is safe to iterate while other threads perform concurrent
+    /// opposite-direction (incoming) maintenance that may reallocate the underlying
+    /// storage. Prefer this over holding a span across concurrent writes.
+    /// Default implementation copies the unsorted view (adequate for stores that do
+    /// not reallocate under concurrency); thread-safe stores must lock internally.
+    virtual void copy_outgoing(NodeID from, std::vector<OutEdge>& out) {
+        const auto span = outgoing_unsorted(from);
+        out.assign(span.begin(), span.end());
+    }
 
     // === Sorted adjacency views ===
 

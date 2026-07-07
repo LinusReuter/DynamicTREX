@@ -258,6 +258,17 @@ public:
         return {in_[to].data(), in_[to].size()};
     }
 
+    // Snapshot outgoing adjacency under the outgoing stripe lock. Safe to iterate
+    // even while other threads mirror incoming edges into this node's outgoing list
+    // (which may reallocate out_[from] and invalidate any span returned above).
+    void copy_outgoing(const NodeID from, std::vector<OutEdge>& out) override {
+        auto& lock = out_locks_[stripe_index(from)];
+        lock.lock();
+        const auto& storage = out_[from];
+        out.assign(storage.begin(), storage.end());
+        lock.unlock();
+    }
+
     outgoing_span outgoing_sorted(const NodeID from) override {
         sort_outgoing(from);
         return {out_[from].data(), out_[from].size()};
