@@ -283,7 +283,10 @@ public:
         auto& out = out_[from];
         auto it = std::find_if(out.begin(), out.end(),
                                [to](const OutEdge& e) { return e.to == to; });
-        if (it != out.end()) return false;
+        if (it != out.end()) {
+            lockF.unlock();
+            return false;
+        }
         out.push_back(OutEdge{to, meta});
         lockF.unlock();
         lockT.lock();
@@ -299,12 +302,14 @@ public:
         auto& lockF = out_locks_[stripe_index(from)];
         auto& lockT = in_locks_[stripe_index(to)];
         lockF.lock();
-        if (!transfer_store_detail::swap_erase_if(out_[from], [to](const OutEdge& e) { return e.to == to; })) {
+        const bool erased =
+            transfer_store_detail::swap_erase_if(out_[from], [to](const OutEdge& e) { return e.to == to; });
+        lockF.unlock();
+        if (!erased) {
             return false;
         }
-        lockF.unlock();
         lockT.lock();
-        transfer_store_detail::swap_erase_if(in_[from], [&](NodeID n){ return n == to; });
+        transfer_store_detail::swap_erase_if(in_[to], [&](NodeID n){ return n == from; });
         lockT.unlock();
         return true;
     }
