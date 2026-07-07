@@ -19,6 +19,8 @@ int main(int argc, char** argv) {
     new SimulateDynamicUpdate(shell);
     new SimulateAndCompareTransferUpdate(shell);
     new SimulateAndCompareTransferUpdates(shell);
+    new SimulateAndDetailCompareTransferTimeline(shell);
+    new SimulateTransferTimeline(shell);
 
     shell.run();
     return 0;
