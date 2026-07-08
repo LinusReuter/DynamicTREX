@@ -207,6 +207,27 @@ struct DynamicQueryData {
             return {false, error_msg.str()};
         }
 
+        // Every CSR index array must start at 0 and be non-decreasing so each derived [begin, end)
+        // sub-range is valid. Sizes and end markers are checked above; these checks are mandatory too.
+        auto validateOffsets = [&](const std::string_view name, const auto& arr) -> bool {
+            if (static_cast<size_t>(arr.front()) != 0) {
+                error_msg << name << " must start at 0, got " << arr.front();
+                return false;
+            }
+            for (size_t i = 1; i < arr.size(); ++i) {
+                if (static_cast<size_t>(arr[i]) < static_cast<size_t>(arr[i - 1])) {
+                    error_msg << name << " is not non-decreasing at index " << i << ": " << arr[i - 1] << " > "
+                              << arr[i];
+                    return false;
+                }
+            }
+            return true;
+        };
+        if (!validateOffsets("firstTripOfRoute", qd.firstTripOfRoute)) return {false, error_msg.str()};
+        if (!validateOffsets("firstStopIdOfRoute", qd.firstStopIdOfRoute)) return {false, error_msg.str()};
+        if (!validateOffsets("firstRouteSegmentOfStop", qd.firstRouteSegmentOfStop)) return {false, error_msg.str()};
+        if (!validateOffsets("firstStopEventOfTrip", qd.firstStopEventOfTrip)) return {false, error_msg.str()};
+
         for (size_t i = 0; i < qd.routeStopSequences.size(); ++i) {
             const StopId stop = qd.routeStopSequences[i];
             if (static_cast<size_t>(stop) >= numStops) {
@@ -215,7 +236,11 @@ struct DynamicQueryData {
             }
         }
 
+        // noTime marks a forbidden alighting (arrivalTime) or boarding (departureTime) at an event.
+        constexpr int64_t noTimeValue = static_cast<int64_t>(Time::InvalidValue);
+
         auto adjustedArrival = [&](const StopId stop, const std::uint32_t time) -> int64_t {
+            if (time == Time::InvalidValue) return noTimeValue;
             int64_t value = static_cast<int64_t>(time);
             if (data.usesImplicitArrivalBufferTimes()) {
                 value -= data.minTransferTime(stop);
@@ -223,6 +248,7 @@ struct DynamicQueryData {
             return value;
         };
         auto adjustedDeparture = [&](const StopId stop, const std::uint32_t time) -> int64_t {
+            if (time == Time::InvalidValue) return noTimeValue;
             int64_t value = static_cast<int64_t>(time);
             if (data.usesImplicitDepartureBufferTimes()) {
                 value += data.minTransferTime(stop);
@@ -357,7 +383,8 @@ struct DynamicQueryData {
                 const size_t tripOffset = tIdx - routeTripBegin;
                 const size_t labelIdx = (s * tripsInRoute) + tripOffset;
                 if (s + 1 < numStopsOnRoute && labelIdx < qd.routeLabels[routeIdx].departureTimes.size()) {
-                    if (qd.routeLabels[routeIdx].departureTimes[labelIdx] != (int) qd.eventDepTimes[eventIndex]) {
+                    if (static_cast<std::uint32_t>(qd.routeLabels[routeIdx].departureTimes[labelIdx]) !=
+                        qd.eventDepTimes[eventIndex]) {
                         error_msg << "RouteLabel departure time mismatch for trip " << tIdx << " at stop index " << s;
                         return {false, error_msg.str()};
                     }
@@ -473,7 +500,8 @@ struct DynamicQueryData {
             StopId prevStop = qd.routeStopSequences[stopSeqStart];
             int64_t prevArr = adjustedArrival(prevStop, qd.eventArrTimes[tripStartEvent]);
             int64_t prevDep = adjustedDeparture(prevStop, qd.eventDepTimes[tripStartEvent]);
-            if (prevDep < prevArr) {
+            // Escape validation if either time is noTime (forbidden boarding/alighting)
+            if (prevArr != noTimeValue && prevDep != noTimeValue && prevDep < prevArr) {
                 error_msg << "Departure before arrival on trip " << tIdx << " at stop index 0: arrival=" << prevArr
                           << ", departure=" << prevDep;
                 return {false, error_msg.str()};
@@ -485,24 +513,31 @@ struct DynamicQueryData {
                 const int64_t arr = adjustedArrival(stop, qd.eventArrTimes[eventIndex]);
                 const int64_t dep = adjustedDeparture(stop, qd.eventDepTimes[eventIndex]);
 
-                if (arr < prevArr) {
+                // Validate monotonicity only if both the current and previous times are valid
+                if (arr != noTimeValue && prevArr != noTimeValue && arr < prevArr) {
                     error_msg << "Decreasing arrival time on trip " << tIdx << " between stops " << (s - 1) << " and "
                               << s << ": " << prevArr << " -> " << arr;
                     return {false, error_msg.str()};
                 }
-                if (dep < prevDep) {
+                if (dep != noTimeValue && prevDep != noTimeValue && dep < prevDep) {
                     error_msg << "Decreasing departure time on trip " << tIdx << " between stops " << (s - 1) << " and "
                               << s << ": " << prevDep << " -> " << dep;
                     return {false, error_msg.str()};
                 }
-                if (dep < arr) {
+                if (arr != noTimeValue && dep != noTimeValue && dep < arr) {
                     error_msg << "Departure before arrival on trip " << tIdx << " at stop index " << s
                               << ": arrival=" << arr << ", departure=" << dep;
                     return {false, error_msg.str()};
                 }
 
-                prevArr = arr;
-                prevDep = dep;
+                // Only propagate timeline tracking if the current stop has a valid time.
+                // This preserves the last valid timestamp across forbidden/skipped stops.
+                if (arr != noTimeValue) {
+                    prevArr = arr;
+                }
+                if (dep != noTimeValue) {
+                    prevDep = dep;
+                }
             }
         }
 
