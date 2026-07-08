@@ -68,6 +68,17 @@ public:
         out.assign(span.begin(), span.end());
     }
 
+    /// Atomically copy the incoming adjacency (source node IDs) of `to` into `out`
+    /// (cleared first). Same stable-snapshot guarantee as copy_outgoing(): safe to
+    /// iterate while other threads perform concurrent opposite-direction (outgoing)
+    /// maintenance that may reallocate the underlying storage.
+    /// Default implementation copies the unsorted view; thread-safe stores must lock
+    /// internally.
+    virtual void copy_incoming(NodeID to, std::vector<NodeID>& out) {
+        const auto span = incoming_unsorted(to);
+        out.assign(span.begin(), span.end());
+    }
+
     // === Sorted adjacency views ===
 
     /// Outgoing adjacency view for `from` (read-only).

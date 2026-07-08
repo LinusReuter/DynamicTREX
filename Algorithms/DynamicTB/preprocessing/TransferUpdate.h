@@ -63,6 +63,15 @@ public:
 
     static constexpr bool kEnableSpacialPruning = false;
 
+    /**
+     * @brief A domination cleanup deferred out of the parallel incoming phase.
+     */
+    struct PendingDominationCleanup {
+        PersistentStopEventId fromEvent;
+        StopEventId flatToEvent;
+        
+    };
+
     explicit TransferUpdate(Store& store) : store_(store) {}
 
     /**
@@ -135,10 +144,12 @@ public:
 #pragma omp parallel if (threads > 1)
         {
             std::vector<PersistentTripId> localTrips;
+            std::vector<NodeID> incomingSnapshot;
 #pragma omp  for schedule(dynamic, 16)
         for (const auto & cancelledTrip : changes.cancelledTrips) {
             for (const auto event : cancelledTrip.eventsOfCancelledTrips) {
-                for (auto from : store_.incoming_sorted(event)) {
+                store_.copy_incoming(event, incomingSnapshot);
+                for (auto from : incomingSnapshot) {
                     StopEventId  fEvent = queryData_->persistentToFlatEvent[from];
                     if (fEvent == noStopEvent) continue;
                     TripId sourceTrip = queryData_->queryData.tripOfStopEvent[fEvent];
@@ -198,17 +209,30 @@ public:
         store_.sync_barrier();
 
         // Phase 3: Parallel Incoming Discovery
+        // Domination cleanups are recorded, not executed here: they mutate shared
+        // source outgoing lists and must run sequentially after.
+        std::vector<PendingDominationCleanup> globalPendingCleanups;
 #pragma omp parallel if (threads > 1)
         {
             std::vector<PersistentTripId> localTrips;
+            std::vector<PendingDominationCleanup> localCleanups;
 #pragma omp for schedule(dynamic, 16)
             for (const auto i : toDiscoverIncoming) {
-                updateIncomingForEvent(i, localTrips);
+                updateIncomingForEvent(i, localTrips, localCleanups);
             }
 #pragma omp critical
-            globalTripsToMinimize.insert(globalTripsToMinimize.end(), localTrips.begin(), localTrips.end());
+            {
+                globalTripsToMinimize.insert(globalTripsToMinimize.end(), localTrips.begin(), localTrips.end());
+                globalPendingCleanups.insert(globalPendingCleanups.end(), localCleanups.begin(),
+                                             localCleanups.end());
+            }
         }
         store_.sync_barrier();
+
+        for (const auto& [fromEvent, flatToEvent] : globalPendingCleanups) {
+            dominationCleanupForInsertedTransfer(fromEvent, flatToEvent, globalTripsToMinimize);
+        }
+
         store_.allowTemporaryInconsistent(false);
 
         // Phase 4: Parallel Processing for Delayed Arrivals
@@ -384,13 +408,14 @@ private:
     /**
      * @brief Core dispatcher for computing and applying incoming discovery modifications.
      */
-    void updateIncomingForEvent(PersistentStopEventId event, std::vector<PersistentTripId>& localTrips) const {
+    void updateIncomingForEvent(PersistentStopEventId event, std::vector<PersistentTripId>& localTrips,
+                                std::vector<PendingDominationCleanup>& pendingCleanups) const {
         StopEventId flatToEvent = queryData_->persistentToFlatEvent[event];
         if (flatToEvent == noStopEvent) return;
 
         std::vector<PersistentStopEventId> desired;
         computeIncomingTransfers(flatToEvent, desired);
-        applyIncomingDiff(event, flatToEvent, desired, localTrips);
+        applyIncomingDiff(event, flatToEvent, desired, localTrips, pendingCleanups);
     }
 
     /**
@@ -589,7 +614,8 @@ private:
      * @brief Computes mutations against current incoming store entries.
      */
     void applyIncomingDiff(PersistentStopEventId toEvent, StopEventId flatToEvent,
-                           std::span<const PersistentStopEventId> desired, std::vector<PersistentTripId>& localTrips) const {
+                           std::span<const PersistentStopEventId> desired, std::vector<PersistentTripId>& localTrips,
+                           std::vector<PendingDominationCleanup>& pendingCleanups) const {
         auto batch = store_.begin_batch(toEvent, Store::Direction::Incoming);
         auto current_span = store_.incoming_sorted(toEvent);
         auto curr_it = current_span.begin();
@@ -640,9 +666,9 @@ private:
         // 3. Safely commit all incoming operations first
         store_.commit_batch(batch);
 
-        // 4. Safely execute the nested outgoing batches for cleanup
+        // 4. Defer domination cleanup:
         for (const auto& fromEvent : newlyInserted) {
-            dominationCleanupForInsertedTransfer(fromEvent, flatToEvent, localTrips);
+            pendingCleanups.push_back({fromEvent, flatToEvent});
         }
     }
 
@@ -650,19 +676,8 @@ private:
      * @brief Clear all transfers for a single stop event (incoming + outgoing).
      */
     inline void clearEventTransfers(PersistentStopEventId event) const {
-        auto out = store_.outgoing_sorted(event);
-        if (!out.empty()) {
-            auto batch = store_.begin_batch(event, Store::Direction::Outgoing);
-            for (const auto& edge : out) store_.remove_outgoing_edge(batch, edge.to);
-            store_.commit_batch(batch);
-        }
-
-        auto in = store_.incoming_sorted(event);
-        if (!in.empty()) {
-            auto batch = store_.begin_batch(event, Store::Direction::Incoming);
-            for (const auto from : in) store_.remove_incoming_edge(batch, from);
-            store_.commit_batch(batch);
-        }
+        store_.clear_outgoing(event);
+        store_.clear_incoming(event);
     }
 
     // === Domination cleanup (incoming discovery only) ===

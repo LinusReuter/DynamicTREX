@@ -269,6 +269,16 @@ public:
         lock.unlock();
     }
 
+    // Snapshot incoming adjacency under the incoming stripe lock. Safe to iterate
+    // even while other threads mirror outgoing edges into this node's incoming list.
+    void copy_incoming(const NodeID to, std::vector<NodeID>& out) override {
+        auto& lock = in_locks_[stripe_index(to)];
+        lock.lock();
+        const auto& storage = in_[to];
+        out.assign(storage.begin(), storage.end());
+        lock.unlock();
+    }
+
     outgoing_span outgoing_sorted(const NodeID from) override {
         sort_outgoing(from);
         return {out_[from].data(), out_[from].size()};
@@ -336,18 +346,32 @@ public:
     }
 
     void clear_outgoing(NodeID from) override {
-        for (const auto& e : out_[from]) {
+        OutStorage out_edges;
+        {
+            auto& selfLock = out_locks_[stripe_index(from)];
+            selfLock.lock();
+            out_edges = std::move(out_[from]);
+            out_[from].clear();
+            selfLock.unlock();
+        }
+
+        for (const auto& e : out_edges) {
             auto& lock = in_locks_[stripe_index(e.to)];
             lock.lock();
             transfer_store_detail::swap_erase_if(in_[e.to], [from](NodeID n){ return n == from; });
             lock.unlock();
         }
-        out_[from].clear();
     }
 
     void clear_incoming(NodeID to) override {
-        auto in_edges = std::move(in_[to]);
-        in_[to].clear();
+        InStorage in_edges;
+        {
+            auto& selfLock = in_locks_[stripe_index(to)];
+            selfLock.lock();
+            in_edges = std::move(in_[to]);
+            in_[to].clear();
+            selfLock.unlock();
+        }
 
         for (const NodeID from : in_edges) {
             auto& lock = out_locks_[stripe_index(from)];
