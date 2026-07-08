@@ -739,18 +739,31 @@ private:
 #pragma omp parallel if (threads > 1)
         {
             std::vector localLabels(numStops, StopLabel());
+            std::vector<TransferCandidate> localCandidates;
             int localTimestamp = 0;
 #pragma omp for schedule(dynamic, 1)
             for (const TripId trip : trips) {
-                reduceTransfersForTrip(trip, localLabels, localTimestamp);
+                reduceTransfersForTrip(trip, localLabels, localCandidates, localTimestamp);
             }
         }
     }
 
     /**
+     * @brief Candidate outgoing transfer during minimization.
+     * Holds a pointer directly into the store's outgoing edge so the keep-flag can
+     * be written in place (O(1))
+     */
+    struct TransferCandidate {
+        typename Store::OutEdge* edge;
+        StopEventId flatTo;
+        int destArrivalTime;
+    };
+
+    /**
      * @brief Evaluates and assigns minimization metadata for transfers of a given trip.
      */
-    void reduceTransfersForTrip(TripId flatTrip, std::vector<StopLabel>& localLabels, int& localTimestamp) const {
+    void reduceTransfersForTrip(TripId flatTrip, std::vector<StopLabel>& localLabels,
+                                std::vector<TransferCandidate>& candidates, int& localTimestamp) const {
         const auto& qd = queryData_->queryData;
         localTimestamp++;
 
@@ -773,24 +786,19 @@ private:
                 localLabels[toStop].update(localTimestamp, arrivalTime + transferTime);
             }
 
-            // 2. Gather full unreduced candidates from the edge store
-            struct TransferCandidate {
-                PersistentStopEventId to;
-                StopEventId flatTo;
-                int destArrivalTime;
-            };
-
-            std::vector<TransferCandidate> candidates;
-            for (const auto& [to, meta] : store_.outgoing_sorted(NodeID(pFromEvent))) {
-                StopEventId flatTo = queryData_->persistentToFlatEvent[to];
+            // 2. Gather full unreduced candidates from the edge store.
+            candidates.clear();
+            for (auto& edge : store_.outgoing_mutable(NodeID(pFromEvent))) {
+                StopEventId flatTo = queryData_->persistentToFlatEvent[edge.to];
                 if (flatTo != noStopEvent) {
-                    candidates.push_back({to, flatTo, static_cast<int>(queryData_->arrivalTimeOfEvent(flatTo))});
+                    candidates.push_back({&edge, flatTo, static_cast<int>(queryData_->arrivalTimeOfEvent(flatTo))});
                 }
             }
 
-            // 3. Sort candidates by destination arrival time matching the original reduction requirements
-            std::ranges::stable_sort(candidates, [](const TransferCandidate& a, const TransferCandidate& b) {
-                return a.destArrivalTime < b.destArrivalTime;
+            // 3. Sort candidates by destination arrival time.
+            std::ranges::sort(candidates, [](const TransferCandidate& a, const TransferCandidate& b) {
+                if (a.destArrivalTime != b.destArrivalTime) return a.destArrivalTime < b.destArrivalTime;
+                return a.edge->to < b.edge->to;
             });
 
             // 4. Domination profile filtering
@@ -824,7 +832,7 @@ private:
                         }
                     }
                 }
-                store_.update_edge_meta(pFromEvent, candidate.to, TransferMeta{keep});
+                candidate.edge->meta.isMinimized = keep;
             }
         }
     }

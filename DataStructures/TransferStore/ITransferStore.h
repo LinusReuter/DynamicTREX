@@ -33,6 +33,7 @@ public:
     using node_id_type = NodeID;
     using edge_meta_type = EdgeMeta;
     using outgoing_span = std::span<const OutEdge>;
+    using mutable_outgoing_span = std::span<OutEdge>;
     using incoming_span = std::span<const NodeID>;
     using batch_id_type = std::size_t;
 
@@ -86,6 +87,13 @@ public:
     /// the same node + direction (Outgoing). Opposite-direction maintenance
     /// may update other nodes concurrently (no cross-direction stability guarantee).
     virtual outgoing_span outgoing_sorted(NodeID from) = 0;
+
+    /// Mutable outgoing adjacency view for `from`, in arbitrary (storage) order and
+    /// WITHOUT sorting the underlying list. Intended for phases that own `from`
+    /// exclusively (e.g. minimization, where each source stop event belongs to a
+    /// single trip) and only mutate edge metadata in place. The span is valid until
+    /// the next structural mutation of `from`.
+    virtual mutable_outgoing_span outgoing_mutable(NodeID from) = 0;
 
     /// Incoming adjacency view for `to` (read-only sources only).
     /// Contract: sorted, unique, and stable until commit_batch() for

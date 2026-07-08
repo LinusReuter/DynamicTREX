@@ -284,6 +284,12 @@ public:
         return {out_[from].data(), out_[from].size()};
     }
 
+    // Mutable, unsorted view of the outgoing storage. No sorting, no locking:
+    // callers must own `from` exclusively for the duration (see interface contract).
+    typename Base::mutable_outgoing_span outgoing_mutable(const NodeID from) override {
+        return {out_[from].data(), out_[from].size()};
+    }
+
     incoming_span incoming_sorted(const NodeID to) override {
         sort_incoming(to);
         return {in_[to].data(), in_[to].size()};
