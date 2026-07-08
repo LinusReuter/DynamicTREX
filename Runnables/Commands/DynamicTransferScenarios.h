@@ -331,7 +331,7 @@ inline void printSimulationSummary(const DynamicTimeTable::Algo::UpdateSimulatio
     std::cout << "  Cancelled trips: " << changes.cancelledTrips.size() << std::endl;
     std::cout << "  Added trips: " << changes.addedTrips.size() << std::endl;
     std::cout << "  Modified events: " << changes.modifiedEvents.size() << std::endl;
-    std::cout << "  Trips with delayed arrivals: " << changes.tripsWithDelayedArrivals.size() << std::endl;
+    std::cout << "  Trips with changed arrivals: " << changes.tripsWithChangedArrivals.size() << std::endl;
 }
 
 inline void printChangeDetails(const DynamicTimeTable::ChangeSummary& changes, std::ostream& out = std::cout) {

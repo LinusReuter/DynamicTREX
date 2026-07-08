@@ -209,14 +209,35 @@ public:
 
         store_.allowTemporaryInconsistent(false);
 
-        // Phase 4: Parallel Processing for Delayed Arrivals
+        // Phase 4: Parallel Processing for Changed Arrivals (later OR earlier).
+        // Two effects of a changed arrival on trip T:
+        //  (a) SELF: T's own minimization seeds StopLabels from the arrival times of all
+        //      of T's stops and accumulates them while scanning stops backward, so a
+        //      changed arrival at any stop affects the keep-decisions of EARLIER stops of
+        //      T. => T itself must be re-minimized.
+        //  (b) UPSTREAM: sources boarding T at stop index j need re-minimization only if
+        //      some arrival CHANGED at a stop index > j. maxChangedIndex is the largest
+        //      such index, so incoming edges into events at index >= maxChangedIndex are
+        //      unaffected and skipped. getEventsOfTrip() returns events in stop-index order.
 #pragma omp parallel if (threads > 1)
         {
             std::vector<TripId> localTrips;
 #pragma omp for schedule(dynamic, 1024)
-            for (const auto tripsWithDelayedArrival : changes.tripsWithDelayedArrivals) {
-                for (const auto event : queryData_->getEventsOfTrip(tripsWithDelayedArrival)) {
-                    for (const auto from : store_.incoming_sorted(event)) {
+            for (const auto& [changedTrip, maxChangedIndex] : changes.tripsWithChangedArrivals) {
+                const auto events = queryData_->getEventsOfTrip(changedTrip);
+                if (events.empty()) continue;
+
+                // (a) SELF: re-minimize the changed trip itself.
+                const StopEventId flatChangedEvent = queryData_->persistentToFlatEvent[events.front()];
+                if (flatChangedEvent != noStopEvent) {
+                    localTrips.push_back(queryData_->tripOfEvent(flatChangedEvent));
+                }
+
+                // (b) UPSTREAM: re-minimize sources feeding stops before the last change.
+                const std::size_t limit =
+                    std::min(static_cast<std::size_t>(maxChangedIndex), events.size());
+                for (std::size_t idx = 0; idx < limit; ++idx) {
+                    for (const auto from : store_.incoming_sorted(events[idx])) {
                         recordSourceTripOfEvent(from, localTrips);
                     }
                 }
@@ -388,11 +409,15 @@ private:
         StopEventId flatFromEvent = queryData_->persistentToFlatEvent[event];
         if (flatFromEvent == noStopEvent) return;
 
-        localTrips.push_back(queryData_->tripOfEvent(flatFromEvent));
-
         std::vector<PersistentStopEventId> desired;
         computeOutgoingTransfers(flatFromEvent, desired);
-        applyOutgoingDiff(event, desired);
+
+        // Only flag this event's trip for re-minimization if its outgoing set actually
+        // changed. If nothing changed here, the trip's minimization is unaffected by this
+        // phase (destination-arrival changes are handled separately by Phase 4).
+        if (applyOutgoingDiff(event, desired)) {
+            localTrips.push_back(queryData_->tripOfEvent(flatFromEvent));
+        }
     }
 
     /**
@@ -592,15 +617,28 @@ private:
     /**
      * @brief Computes mutations against current outgoing store entries.
      */
-    inline void applyOutgoingDiff(PersistentStopEventId fromEvent,
+    inline bool applyOutgoingDiff(PersistentStopEventId fromEvent,
                                   std::span<const PersistentStopEventId> desired) const {
         auto batch = store_.begin_batch(fromEvent, Store::Direction::Outgoing);
+        // Re-minimization of this source is needed only if a candidate that participated
+        // in the reduction changed: any ADD (a new candidate can flip other keep-flags),
+        // or the removal of a MINIMIZED edge. Removing a non-minimized edge cannot change
+        // any keep-flag -- during reduction a non-kept candidate writes no StopLabels, so
+        // it has no effect on the decisions of the remaining candidates.
+        bool needsRemin = false;
         mergeSortedDiff(
             store_.outgoing_sorted(fromEvent), desired, [](const auto& edge) { return edge.to; },
-            [&](const auto& edge) { store_.remove_outgoing_edge(batch, edge.to); },
-            [&](PersistentStopEventId to) { store_.add_outgoing_edge(batch, to, TransferMeta{false}); },
+            [&](const auto& edge) {
+                if (edge.meta.isMinimized) needsRemin = true;
+                store_.remove_outgoing_edge(batch, edge.to);
+            },
+            [&](PersistentStopEventId to) {
+                store_.add_outgoing_edge(batch, to, TransferMeta{false});
+                needsRemin = true;
+            },
             [](const auto&) {});
         store_.commit_batch(batch);
+        return needsRemin;
     }
 
     /**
@@ -611,8 +649,8 @@ private:
                            std::vector<PendingDominationCleanup>& pendingCleanups) const {
         auto batch = store_.begin_batch(toEvent, Store::Direction::Incoming);
 
-        // New incoming edges whose domination cleanup is deferred (see below). Every changed
-        // edge's source trip is flagged for re-minimization via recordSourceTripOfEvent.
+        // New incoming edges whose domination cleanup is deferred.
+        // Track reduction targets on edge changes.
         std::vector<PersistentStopEventId> newlyInserted;
 
         mergeSortedDiff(
@@ -626,7 +664,7 @@ private:
                 store_.add_incoming_edge(batch, from, TransferMeta{false});
                 newlyInserted.push_back(from);
             },
-            [&](PersistentStopEventId from) { recordSourceTripOfEvent(from, localTrips); });
+            [](PersistentStopEventId) {});
 
         // Safely commit all incoming operations first, then defer domination cleanup.
         store_.commit_batch(batch);

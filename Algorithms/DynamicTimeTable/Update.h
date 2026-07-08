@@ -108,7 +108,8 @@ private:
             }
 
             bool structural = false;
-            bool delayedArrivals = false;
+            bool changedArrivals = false;
+            StopIndex maxChangedArrivalIndex(0);
             std::vector<PersistentStopEventId> preActiveEvents;
 
             // Pre-scan to detect structural changes before mutating skip flags.
@@ -165,13 +166,17 @@ private:
                     structural = true;
                 }
 
-                if (e.arrivalTime > oldArr) delayedArrivals = true;
+                if (e.arrivalTime != oldArr) {
+                    changedArrivals = true;
+                    // Note: max changed arrival is over guessed as it also counts skipped events
+                    maxChangedArrivalIndex = std::max(maxChangedArrivalIndex, m.stopIndex);
+                }
                 bool earlier_departure = e.departureTime < oldDep;
                 context.summary.modifiedEvents.emplace_back(eventId, earlier_departure);
             }
 
-            if (delayedArrivals) {
-                context.summary.tripsWithDelayedArrivals.push_back(tripId);
+            if (changedArrivals) {
+                context.summary.tripsWithChangedArrivals.emplace_back(tripId, maxChangedArrivalIndex);
             }
 
             if (structural) {

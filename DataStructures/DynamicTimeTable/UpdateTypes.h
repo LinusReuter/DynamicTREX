@@ -64,21 +64,26 @@ struct ChangeSummary {
     std::vector<std::pair<PersistentStopEventId, bool>> modifiedEvents;
 
     // MINIMIZATION: Upstream Impact
-    // If a trip's arrival times were delayed, transfers pointing INTO it
-    // are now worse. The Transfer Stage must look up incoming edges to this trip,
-    // and flag their SOURCE trips for re-minimization.
-    std::vector<PersistentTripId> tripsWithDelayedArrivals;
+    // If a trip's arrival times CHANGED (later OR earlier), transfers pointing INTO it
+    // may need re-minimization. The Transfer Stage looks up incoming edges to this trip
+    // and flags their SOURCE trips.
+    //
+    // Only sources boarding at a stop index STRICTLY BEFORE some changed arrival are
+    // affected (minimization dominance reads arrival times of stops after the boarding
+    // stop). We therefore carry the maximum stop index whose arrival changed: incoming
+    // edges into events at stop index >= maxChangedArrivalIndex can be skipped.
+    std::vector<std::pair<PersistentTripId, StopIndex>> tripsWithChangedArrivals;
 
     void clear() {
         cancelledTrips.clear();
         addedTrips.clear();
         modifiedEvents.clear();
-        tripsWithDelayedArrivals.clear();
+        tripsWithChangedArrivals.clear();
     }
 
     bool hasStructuralChanges() const {
         return !cancelledTrips.empty() || !addedTrips.empty() || !modifiedEvents.empty() ||
-               !tripsWithDelayedArrivals.empty();
+               !tripsWithChangedArrivals.empty();
     }
 };
 
