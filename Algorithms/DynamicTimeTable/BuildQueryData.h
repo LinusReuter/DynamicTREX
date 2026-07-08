@@ -67,6 +67,55 @@ struct DynamicQueryData {
         return pEvents;
     }
 
+    // --- Flat stop-event accessors ---
+    // Resolve properties directly from a flat StopEventId, mirroring the (trip, index) helpers above.
+    inline TripId tripOfEvent(const StopEventId event) const noexcept {
+        return queryData.tripOfStopEvent[event];
+    }
+
+    inline RouteId routeOfEvent(const StopEventId event) const noexcept {
+        return queryData.getRouteOfStopEvent(event);
+    }
+
+    inline StopIndex stopIndexOfEvent(const StopEventId event) const noexcept {
+        return StopIndex(event - queryData.firstStopEventOfTrip[queryData.tripOfStopEvent[event]]);
+    }
+
+    inline StopId stopOfEvent(const StopEventId event) const noexcept {
+        return queryData.eventLookup[event].stop;
+    }
+
+    inline Time arrivalTimeOfEvent(const StopEventId event) const noexcept {
+        return Time(queryData.eventArrTimes[event]);
+    }
+
+    inline Time departureTimeOfEvent(const StopEventId event) const noexcept {
+        return Time(queryData.eventDepTimes[event]);
+    }
+
+    // --- Flat <-> persistent bridges ---
+    // Persistent trip owning a flat stop event.
+    inline PersistentTripId persistentTripOfFlatEvent(const StopEventId event) const noexcept {
+        return flatToPersistentTrip[queryData.tripOfStopEvent[event]];
+    }
+
+    // Persistent trip owning a persistent stop event; noPersistentTripId if the event is inactive.
+    inline PersistentTripId persistentTripOfEvent(const PersistentStopEventId pEvent) const noexcept {
+        const StopEventId flatEvent = persistentToFlatEvent[pEvent];
+        if (flatEvent == noStopEvent) return noPersistentTripId;
+        return flatToPersistentTrip[queryData.tripOfStopEvent[flatEvent]];
+    }
+
+    // True if the persistent stop event is present in the active flat timetable.
+    inline bool isEventActive(const PersistentStopEventId pEvent) const noexcept {
+        return persistentToFlatEvent[pEvent] != noStopEvent;
+    }
+
+    // Persistent id of the (flatTrip, index) stop event.
+    inline PersistentStopEventId persistentEventId(const TripId flatTrip, const StopIndex index) const noexcept {
+        return flatToPersistentEvent[StopEventId(queryData.firstStopEventOfTrip[flatTrip] + index)];
+    }
+
     std::pair<bool, std::string> validate(const DynamicTimeTable::Data& data) const {
         std::stringstream error_msg;
         const auto& qd = queryData;
