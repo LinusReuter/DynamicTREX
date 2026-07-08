@@ -123,6 +123,22 @@ public:
     /// Remove all incoming edges for `to`.
     virtual void clear_incoming(NodeID to) = 0;
 
+    /// Remove all incoming edges for `to`, appending each removed edge as
+    /// (source, meta) to `removed`. The meta is read from the source's outgoing
+    /// record while it is erased, so thread-safe stores return it without an extra
+    /// scan and without racing concurrent opposite-direction maintenance.
+    /// Default: copy_incoming() + readEdgeMeta() + clear_incoming() (fine for stores
+    /// that maintain full consistency and do not need internal locking).
+    virtual void clear_incoming_with_meta(NodeID to, std::vector<std::pair<NodeID, EdgeMeta>>& removed) {
+        std::vector<NodeID> sources;
+        copy_incoming(to, sources);
+        removed.reserve(removed.size() + sources.size());
+        for (const NodeID from : sources) {
+            removed.emplace_back(from, readEdgeMeta(from, to));
+        }
+        clear_incoming(to);
+    }
+
     /// Clears the complete store
     virtual void clear() = 0;
 

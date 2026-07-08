@@ -387,6 +387,36 @@ public:
         }
     }
 
+    // Same as clear_incoming(), but reports each removed edge's (source, meta). The meta
+    // is read from the source's outgoing record while it is erased, under that source's
+    // out-lock, so it is race-safe against concurrent opposite-direction maintenance and
+    // costs no extra scan beyond the erase clear_incoming already performs.
+    void clear_incoming_with_meta(NodeID to, std::vector<std::pair<NodeID, EdgeMeta>>& removed) override {
+        InStorage in_edges;
+        {
+            auto& selfLock = in_locks_[stripe_index(to)];
+            selfLock.lock();
+            in_edges = std::move(in_[to]);
+            in_[to].clear();
+            selfLock.unlock();
+        }
+
+        removed.reserve(removed.size() + in_edges.size());
+        for (const NodeID from : in_edges) {
+            auto& lock = out_locks_[stripe_index(from)];
+            lock.lock();
+            auto& storage = out_[from];
+            auto it = std::find_if(storage.begin(), storage.end(),
+                                   [to](const OutEdge& e) { return e.to == to; });
+            if (it != storage.end()) {
+                removed.emplace_back(from, it->meta);
+                *it = std::move(storage.back());
+                storage.pop_back();
+            }
+            lock.unlock();
+        }
+    }
+
     void clear() override {
         out_.clear();
         in_.clear();

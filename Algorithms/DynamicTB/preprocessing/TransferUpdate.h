@@ -151,15 +151,20 @@ public:
 #pragma omp parallel if (threads > 1)
         {
             std::vector<TripId> localTrips;
-            std::vector<NodeID> incomingSnapshot;
+            std::vector<std::pair<NodeID, TransferMeta>> removedIncoming;
 #pragma omp for schedule(dynamic, 16)
             for (const auto& cancelledTrip : changes.cancelledTrips) {
                 for (const auto event : cancelledTrip.eventsOfCancelledTrips) {
-                    store_.copy_incoming(event, incomingSnapshot);
-                    for (const auto from : incomingSnapshot) {
-                        recordSourceTripOfEvent(from, localTrips);
+                    store_.clear_outgoing(event);
+                    // Sources lose their outgoing edge into this cancelled event. Only a
+                    // source whose edge was MINIMIZED can have its reduction change; a
+                    // non-minimized edge writes no StopLabels during reduction, so its
+                    // removal leaves every other keep-flag untouched.
+                    removedIncoming.clear();
+                    store_.clear_incoming_with_meta(event, removedIncoming);
+                    for (const auto& [from, meta] : removedIncoming) {
+                        if (meta.isMinimized) recordSourceTripOfEvent(from, localTrips);
                     }
-                    clearEventTransfers(event);
                 }
             }
 #pragma omp critical
