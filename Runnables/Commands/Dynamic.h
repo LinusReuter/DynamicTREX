@@ -404,7 +404,7 @@ public:
 
             DynamicTimeTable::Algo::UpdateSimulationStats simStats{};
             const DynamicTimeTable::PendingUpdates updates =
-                UpdateGenerator(simulationConfig())(dynamicTimeTable, now, &simStats);
+                UpdateGenerator(simulationConfigWithSeed(seed))(dynamicTimeTable, now, &simStats);
 
             const TimedAppliedUpdate applied =
                 applyIncrementalUpdateTimed(
