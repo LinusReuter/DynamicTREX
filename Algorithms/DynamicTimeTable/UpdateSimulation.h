@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <random>
 #include <unordered_map>
@@ -158,7 +159,7 @@ public:
         const std::vector<PersistentTripId> selectedDelays = sampleSubset(filteredDelayCandidates, cfg_.delays.expectedCount);
         const std::vector<PersistentTripId> selectedSkips = sampleSubset(filteredSkipCandidates, cfg_.skips.expectedCount);
 
-        std::vector<TripModificationBuffer> modBuffers(trips.size());
+        std::unordered_map<std::size_t, TripModificationBuffer> modBuffers;
 
         // Apply delays
         for (const PersistentTripId tripId : selectedDelays) {
@@ -200,21 +201,25 @@ public:
             std::shuffle(futureStops.begin(), futureStops.end(), rng_);
             futureStops.resize(static_cast<std::size_t>(numToSkip));
 
+            TripModificationBuffer& buffer = modBuffers[tIdx];
             for (const std::size_t stopIdx : futureStops) {
-                modBuffers[tIdx].addSkip(stopIdx);
+                buffer.addSkip(stopIdx);
                 stats.modifiedStops++;
             }
             stats.skippedTrips++;
         }
 
         // Emit modifications (sorted by trip id, stop index)
-        for (std::size_t i = 0; i < modBuffers.size(); i++) {
-            if (!modBuffers[i].used()) continue;
-            auto mods = modBuffers[i].takeSorted();
+        result.modifications.reserve(modBuffers.size());
+        for (auto& [tIdx, buffer] : modBuffers) {
+            if (!buffer.used()) continue;
+            auto mods = buffer.takeSorted();
             if (!mods.empty()) {
-                result.modifications.emplace_back(PersistentTripId(i), std::move(mods));
+                result.modifications.emplace_back(PersistentTripId(tIdx), std::move(mods));
             }
         }
+        std::sort(result.modifications.begin(), result.modifications.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
 
         if (outStats) *outStats = stats;
         return result;
@@ -365,12 +370,13 @@ private:
         return true;
     }
 
-    std::vector<PersistentTripId> sampleSubset(std::vector<PersistentTripId> candidates, const std::size_t count) {
+    std::vector<PersistentTripId> sampleSubset(const std::vector<PersistentTripId>& candidates, const std::size_t count) {
         if (candidates.empty()) return {};
-        std::shuffle(candidates.begin(), candidates.end(), rng_);
-        if (candidates.size() > count) candidates.resize(count);
-        std::sort(candidates.begin(), candidates.end());
-        return candidates;
+        std::vector<PersistentTripId> result;
+        result.reserve(std::min(count, candidates.size()));
+        std::sample(candidates.begin(), candidates.end(), std::back_inserter(result), count, rng_);
+        std::sort(result.begin(), result.end());
+        return result;
     }
 
     UpdateSimulationConfig cfg_;
