@@ -423,14 +423,19 @@ private:
                                    changes.tripsToRediscoverIncomingDueToCancellation.size());
 
         for (const auto pTrip : changes.tripsToRediscoverIncomingDueToCancellation) {
-            toDiscoverIncoming.append_range(queryData_->getEventsOfTrip(pTrip));
+            const auto events = queryData_->getEventsOfTrip(pTrip);
+            toDiscoverIncoming.insert(toDiscoverIncoming.end(), events.begin(), events.end());
         }
         for (const auto pTrip : changes.addedTrips) {
-            toDiscoverOutgoing.append_range(queryData_->getEventsOfTrip(pTrip));
-            toDiscoverIncoming.append_range(queryData_->getEventsOfTrip(pTrip));
+            const auto events = queryData_->getEventsOfTrip(pTrip);
+            toDiscoverOutgoing.insert(toDiscoverOutgoing.end(), events.begin(), events.end());
+            toDiscoverIncoming.insert(toDiscoverIncoming.end(), events.begin(), events.end());
         }
-        toDiscoverOutgoing.append_range(std::views::keys(changes.modifiedEvents));
-        toDiscoverIncoming.append_range(std::views::keys(changes.modifiedEvents));
+        {
+            const auto keys = std::views::keys(changes.modifiedEvents);
+            toDiscoverOutgoing.insert(toDiscoverOutgoing.end(), keys.begin(), keys.end());
+            toDiscoverIncoming.insert(toDiscoverIncoming.end(), keys.begin(), keys.end());
+        }
 
         // An earlier departure can newly enable incoming transfers into the same stop on the
         // NEXT trip of the same route: rediscover that event too.
