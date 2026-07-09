@@ -438,13 +438,14 @@ private:
 inline TimedAppliedUpdate applyIncrementalUpdateTimed(DynamicTimeTable::Data& dynamicTimeTable,
                                                        TransferUpdater& transferUpdater,
                                                        const DynamicTimeTable::PendingUpdates& updates,
-                                                       const int numberOfThreads) {
+                                                       const int numberOfThreads,
+                                                       const int nowSeconds = TransferUpdater::noTimeCutoff) {
     auto timed = runTimed([&]() {
         const DynamicTimeTable::UpdateStatistics statistics =
             DynamicTimeTable::Algo::UpdatePipeline::applyUpdates(dynamicTimeTable, updates);
         auto queryData = DynamicQueryData::buildFromDynamic(dynamicTimeTable);
         const DynamicTimeTable::ChangeSummary& changes = dynamicTimeTable.getLatestChanges();
-        transferUpdater.applyFullUpdates(changes, queryData, numberOfThreads);
+        transferUpdater.applyFullUpdates(changes, queryData, numberOfThreads, nowSeconds);
         return AppliedUpdate(std::move(queryData), changes, statistics);
     });
     return {std::move(timed.value), timed.duration};
@@ -452,16 +453,20 @@ inline TimedAppliedUpdate applyIncrementalUpdateTimed(DynamicTimeTable::Data& dy
 
 class IncrementalUpdateApplier {
 public:
-    explicit IncrementalUpdateApplier(const int numberOfThreads) : numberOfThreads(numberOfThreads) {}
+    explicit IncrementalUpdateApplier(const int numberOfThreads,
+                                      const int nowSeconds = TransferUpdater::noTimeCutoff)
+        : numberOfThreads(numberOfThreads), nowSeconds(nowSeconds) {}
 
     AppliedUpdate operator()(DynamicTimeTable::Data& dynamicTimeTable,
                              TransferUpdater& transferUpdater,
                              const DynamicTimeTable::PendingUpdates& updates) const {
-        return applyIncrementalUpdateTimed(dynamicTimeTable, transferUpdater, updates, numberOfThreads).applied;
+        return applyIncrementalUpdateTimed(dynamicTimeTable, transferUpdater, updates, numberOfThreads, nowSeconds)
+            .applied;
     }
 
 private:
     int numberOfThreads;
+    int nowSeconds;
 };
 
 class RebuildComparator {
@@ -528,7 +533,8 @@ inline UpdateComparisonResult simulateApplyAndCompare(
     std::ostream* out = nullptr) {
     DynamicTimeTable::Algo::UpdateSimulationStats simStats{};
     DynamicTimeTable::PendingUpdates updates = UpdateGenerator(simulationConfig)(dynamicTimeTable, nowSeconds, &simStats);
-    AppliedUpdate applied = IncrementalUpdateApplier(numberOfThreads)(dynamicTimeTable, transferUpdater, updates);
+    AppliedUpdate applied =
+        IncrementalUpdateApplier(numberOfThreads, nowSeconds)(dynamicTimeTable, transferUpdater, updates);
     const bool ok = RebuildComparator(transferSets, numberOfThreads)(transferUpdater, applied.queryData, out);
     return {std::move(applied), std::move(updates), simStats, ok};
 }
