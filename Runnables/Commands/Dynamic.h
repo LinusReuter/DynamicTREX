@@ -6,6 +6,7 @@
 #include <string>
 
 #include "../../DataStructures/RAPTOR/Data.h"
+#include "../../Helpers/PhaseTimings.h"
 #include "DynamicTransferCommandBase.h"
 
 using namespace Shell;
@@ -119,18 +120,21 @@ public:
         TransferUpdater transferUpdater(store);
         InitialTransferStoreBuilder(TransferSetSelection::Full, threads)(transferUpdater, queryData);
 
+        PhaseTimings phases{};
         DynamicTimeTable::Algo::UpdateSimulationStats simStats{};
         const DynamicTimeTable::PendingUpdates updates =
-            UpdateGenerator(simulationConfig())(dynamicTimeTable, nowSeconds, &simStats);
+            UpdateGenerator(simulationConfig())(dynamicTimeTable, nowSeconds, &simStats, &phases);
 
         std::cout << "Applying updates..." << std::endl;
         const TimedAppliedUpdate applied = applyIncrementalUpdateTimed(dynamicTimeTable, transferUpdater, updates, threads);
         validateDynamicQueryData(applied.applied.queryData, dynamicTimeTable, "Updated");
+        phases += applied.phases;
 
         std::cout << "Update pipeline finished in " << applied.duration << std::endl;
         if (applied.applied.changes != nullptr) {
             printSimulationSummary(simStats, updates, applied.applied.statistics, *applied.applied.changes);
         }
+        printPhaseTimings(phases);
     }
 };
 
@@ -173,6 +177,7 @@ public:
             printSimulationSummary(result.simulationStats, result.pendingUpdates, result.applied.statistics, *result.applied.changes);
             printChangeDetails(*result.applied.changes);
         }
+        printPhaseTimings(result.phases);
 
         std::cout << (result.ok ? "\nTransfer update comparison PASSED for requested transfer set(s)."
                                 : "\nTransfer update comparison FAILED.")
@@ -192,6 +197,7 @@ public:
         addParameter("Iterations", "200");
         addParameter("Output File Path", "simulation_output.txt");
         addParameter("Temp Store Path", "base_store.tmp");
+        addParameter("Timing CSV output path", "");
         addSimulationRateParameters("100", "100", "100");
         addTransferSetParameters();
     }
@@ -224,6 +230,18 @@ public:
             return;
         }
 
+        const std::string timingCsvPath = getParameter("Timing CSV output path");
+        std::ofstream timingCsv;
+        if (!timingCsvPath.empty()) {
+            timingCsv.open(timingCsvPath);
+            if (!timingCsv) {
+                std::cerr << "Failed to open timing CSV file: " << timingCsvPath << std::endl;
+                return;
+            }
+            writePhaseTimingsCsvHeader(timingCsv);
+        }
+        PhaseTimingsAccumulator timingAccumulator;
+
         std::cout << "Starting simulation loop across " << iterations << " iterations..." << std::endl;
         bool divergenceFound = false;
         for (int i = 0; i < iterations; ++i) {
@@ -245,6 +263,11 @@ public:
                                                                           &outFile);
             outFile << "Status: " << (result.ok ? "Success" : "FAILED") << "\n\n";
 
+            timingAccumulator.add(result.phases);
+            if (timingCsv) {
+                writePhaseTimingsCsvRow(result.phases, i + 1, timingCsv);
+            }
+
             if (!result.ok) {
                 divergenceFound = true;
                 std::cout << "\n\n!!! DIVERGENCE DETECTED !!!" << std::endl;
@@ -261,6 +284,7 @@ public:
         if (!divergenceFound) {
             std::cout << "\nAll iterations completed successfully. No transfer divergences found." << std::endl;
         }
+        printPhaseTimingsSummary(timingAccumulator);
     }
 };
 
@@ -276,6 +300,7 @@ public:
         addParameter("Step seconds", "60");
         addParameter("Base Random seed", "1");
         addParameter("Output File Path", "timeline_simulation_output.txt");
+        addParameter("Timing CSV output path", "");
         addSimulationRateParameters("0", "0", "0");
         addTransferSetParameters();
     }
@@ -294,6 +319,18 @@ public:
             std::cerr << "Failed to open output file: " << getParameter("Output File Path") << std::endl;
             return;
         }
+
+        const std::string timingCsvPath = getParameter("Timing CSV output path");
+        std::ofstream timingCsv;
+        if (!timingCsvPath.empty()) {
+            timingCsv.open(timingCsvPath);
+            if (!timingCsv) {
+                std::cerr << "Failed to open timing CSV file: " << timingCsvPath << std::endl;
+                return;
+            }
+            writePhaseTimingsCsvHeader(timingCsv);
+        }
+        PhaseTimingsAccumulator timingAccumulator;
 
         DynamicTimeTable::Data dynamicTimeTable = loadDynamicTimeTable(getParameter("Input binary (DynamicTimeTable Data)"));
         const auto queryData = QueryDataBuilder()(dynamicTimeTable, "initial DynamicQueryData");
@@ -323,6 +360,11 @@ public:
                                                                           &outFile);
             outFile << "Status: " << (result.ok ? "Success" : "FAILED") << "\n\n";
 
+            timingAccumulator.add(result.phases);
+            if (timingCsv) {
+                writePhaseTimingsCsvRow(result.phases, stepIndex + 1, timingCsv);
+            }
+
             if (!result.ok) {
                 divergenceFound = true;
                 std::cout << "\n\n!!! TIMELINE DIVERGENCE DETECTED !!!" << std::endl;
@@ -342,6 +384,7 @@ public:
                       << " to " << endTimeSeconds << " seconds in " << stepSeconds
                       << " second steps." << std::endl;
         }
+        printPhaseTimingsSummary(timingAccumulator);
     }
 };
 
@@ -358,6 +401,7 @@ public:
         addParameter("Step seconds", "60");
         addParameter("Base Random seed", "1");
         addParameter("Output File Path", "timeline_simulation_output.txt");
+        addParameter("Timing CSV output path", "");
         addSimulationRateParameters("0", "0", "0");
         addTransferSetParameters();
     }
@@ -376,6 +420,18 @@ public:
             std::cerr << "Failed to open output file: " << getParameter("Output File Path") << std::endl;
             return;
         }
+
+        const std::string timingCsvPath = getParameter("Timing CSV output path");
+        std::ofstream timingCsv;
+        if (!timingCsvPath.empty()) {
+            timingCsv.open(timingCsvPath);
+            if (!timingCsv) {
+                std::cerr << "Failed to open timing CSV file: " << timingCsvPath << std::endl;
+                return;
+            }
+            writePhaseTimingsCsvHeader(timingCsv);
+        }
+        PhaseTimingsAccumulator timingAccumulator;
 
         DynamicTimeTable::Data dynamicTimeTable =
             loadDynamicTimeTable(getParameter("Input binary (DynamicTimeTable Data)"));
@@ -402,9 +458,10 @@ public:
                     << " | Current time: " << now
                     << " | Seed: " << seed << " ===\n";
 
+            PhaseTimings stepPhases{};
             DynamicTimeTable::Algo::UpdateSimulationStats simStats{};
             const DynamicTimeTable::PendingUpdates updates =
-                UpdateGenerator(simulationConfigWithSeed(seed))(dynamicTimeTable, now, &simStats);
+                UpdateGenerator(simulationConfigWithSeed(seed))(dynamicTimeTable, now, &simStats, &stepPhases);
 
             const TimedAppliedUpdate applied =
                 applyIncrementalUpdateTimed(
@@ -412,10 +469,16 @@ public:
                     transferUpdater,
                     updates,
                     transfers.threads);
+            stepPhases += applied.phases;
 
             outFile << "Applied update in "
                     << applied.duration.count()
                     << " µs\n";
+
+            timingAccumulator.add(stepPhases);
+            if (timingCsv) {
+                writePhaseTimingsCsvRow(stepPhases, stepIndex + 1, timingCsv);
+            }
         }
 
         std::cout << "\nTimeline completed successfully from "
@@ -426,5 +489,6 @@ public:
                   << stepSeconds
                   << " second steps."
                   << std::endl;
+        printPhaseTimingsSummary(timingAccumulator);
     }
 };

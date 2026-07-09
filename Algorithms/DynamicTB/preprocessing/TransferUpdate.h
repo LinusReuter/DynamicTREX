@@ -14,6 +14,8 @@
 
 #include "../../../DataStructures/DynamicTimeTable/UpdateTypes.h"
 #include "../../../DataStructures/TransferStore/ITransferStore.h"
+#include "../../../Helpers/PhaseTimings.h"
+#include "../../../Helpers/Timer.h"
 #include "../../../Helpers/Types.h"
 #include "../../DynamicTimeTable/BuildQueryData.h"
 
@@ -137,7 +139,9 @@ public:
      * Evaluates cancellation, outgoing, and incoming discovery phases safely in parallel.
      */
     void applyFullUpdates(const DynamicTimeTable::ChangeSummary& changes, const DynamicQueryData& queryData,
-                          const int numberOfThreads, const int nowSeconds = noTimeCutoff) {
+                          const int numberOfThreads, const int nowSeconds = noTimeCutoff,
+                          PhaseTimings* outPhases = nullptr) {
+        Timer baseTimer;
         const int threads = std::max(1, numberOfThreads);
         omp_set_num_threads(threads);
         queryData_ = &queryData;
@@ -265,7 +269,18 @@ public:
         }
 
         aggregateMaxByTrip(globalTripsToMinimize);
+
+        if (outPhases != nullptr) {
+            outPhases->baseTransferUpdate += std::chrono::microseconds(
+                static_cast<long long>(baseTimer.elapsedMicroseconds()));
+        }
+
+        Timer minimizationTimer;
         updateMinimizedTransfers(globalTripsToMinimize, queryData, numberOfThreads, nowSeconds);
+        if (outPhases != nullptr) {
+            outPhases->minimizationUpdate += std::chrono::microseconds(
+                static_cast<long long>(minimizationTimer.elapsedMicroseconds()));
+        }
     }
 
     /**
@@ -320,16 +335,28 @@ public:
      * @brief Export the current FULL transfer set in compact layout.
      */
     [[nodiscard]] TripBased::Transfers exportFullTransfers(const DynamicQueryData& queryData,
-                                                           const int numberOfThreads) const {
-        return exportTransfersImpl<false>(queryData, numberOfThreads);
+                                                           const int numberOfThreads,
+                                                           PhaseTimings* outPhases = nullptr) const {
+        Timer timer;
+        TripBased::Transfers result = exportTransfersImpl<false>(queryData, numberOfThreads);
+        if (outPhases != nullptr) {
+            outPhases->exportPhase += std::chrono::microseconds(static_cast<long long>(timer.elapsedMicroseconds()));
+        }
+        return result;
     }
 
     /**
      * @brief Export the current REDUCED transfer set in compact layout.
      */
     [[nodiscard]] TripBased::Transfers exportReducedTransfers(const DynamicQueryData& queryData,
-                                                              const int numberOfThreads) const {
-        return exportTransfersImpl<true>(queryData, numberOfThreads);
+                                                              const int numberOfThreads,
+                                                              PhaseTimings* outPhases = nullptr) const {
+        Timer timer;
+        TripBased::Transfers result = exportTransfersImpl<true>(queryData, numberOfThreads);
+        if (outPhases != nullptr) {
+            outPhases->exportPhase += std::chrono::microseconds(static_cast<long long>(timer.elapsedMicroseconds()));
+        }
+        return result;
     }
 
 private:

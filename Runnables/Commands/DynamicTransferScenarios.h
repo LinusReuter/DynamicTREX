@@ -17,6 +17,8 @@
 #include "../../Algorithms/DynamicTimeTable/UpdateSimulation.h"
 #include "../../DataStructures/DynamicTimeTable/Data.h"
 #include "../../DataStructures/TransferStore/TransferStore.h"
+#include "../../Helpers/PhaseTimings.h"
+#include "../../Helpers/Timer.h"
 #include "Algorithms/DynamicTB/preprocessing/TransferUpdate.h"
 
 namespace DynamicTransferScenarios {
@@ -57,6 +59,7 @@ struct AppliedUpdate {
 struct TimedAppliedUpdate {
     AppliedUpdate applied;
     std::chrono::microseconds duration{};
+    PhaseTimings phases{};
 };
 
 struct UpdateComparisonResult {
@@ -64,6 +67,7 @@ struct UpdateComparisonResult {
     DynamicTimeTable::PendingUpdates pendingUpdates;
     DynamicTimeTable::Algo::UpdateSimulationStats simulationStats{};
     bool ok{false};
+    PhaseTimings phases{};
 };
 
 template <typename Value>
@@ -288,11 +292,12 @@ inline void buildInitialTransfersForSelection(TransferUpdater& updater,
 inline TripBased::Transfers exportTransfers(const TransferUpdater& updater,
                                             const DynamicQueryData& queryData,
                                             const TransferSetKind kind,
-                                            const int numberOfThreads) {
+                                            const int numberOfThreads,
+                                            PhaseTimings* outPhases = nullptr) {
     if (kind == TransferSetKind::Full) {
-        return updater.exportFullTransfers(queryData, numberOfThreads);
+        return updater.exportFullTransfers(queryData, numberOfThreads, outPhases);
     }
-    return updater.exportReducedTransfers(queryData, numberOfThreads);
+    return updater.exportReducedTransfers(queryData, numberOfThreads, outPhases);
 }
 
 inline std::size_t countModifiedStops(const DynamicTimeTable::PendingUpdates& updates) {
@@ -426,9 +431,16 @@ public:
 
     DynamicTimeTable::PendingUpdates operator()(DynamicTimeTable::Data& dynamicTimeTable,
                                                 const int nowSeconds,
-                                                DynamicTimeTable::Algo::UpdateSimulationStats* stats = nullptr) const {
+                                                DynamicTimeTable::Algo::UpdateSimulationStats* stats = nullptr,
+                                                PhaseTimings* outPhases = nullptr) const {
         DynamicTimeTable::Algo::UpdateSimulator simulator(config);
-        return simulator.generate(dynamicTimeTable, Time(nowSeconds), stats);
+        Timer timer;
+        DynamicTimeTable::PendingUpdates updates = simulator.generate(dynamicTimeTable, Time(nowSeconds), stats);
+        if (outPhases != nullptr) {
+            outPhases->updateGeneration +=
+                std::chrono::microseconds(static_cast<long long>(timer.elapsedMicroseconds()));
+        }
+        return updates;
     }
 
 private:
@@ -440,15 +452,24 @@ inline TimedAppliedUpdate applyIncrementalUpdateTimed(DynamicTimeTable::Data& dy
                                                        const DynamicTimeTable::PendingUpdates& updates,
                                                        const int numberOfThreads,
                                                        const int nowSeconds = TransferUpdater::noTimeCutoff) {
+    PhaseTimings phases{};
     auto timed = runTimed([&]() {
+        Timer timetableTimer;
         const DynamicTimeTable::UpdateStatistics statistics =
             DynamicTimeTable::Algo::UpdatePipeline::applyUpdates(dynamicTimeTable, updates);
+        phases.timetableUpdate +=
+            std::chrono::microseconds(static_cast<long long>(timetableTimer.elapsedMicroseconds()));
+
+        Timer queryDataTimer;
         auto queryData = DynamicQueryData::buildFromDynamic(dynamicTimeTable);
+        phases.queryDataExport +=
+            std::chrono::microseconds(static_cast<long long>(queryDataTimer.elapsedMicroseconds()));
+
         const DynamicTimeTable::ChangeSummary& changes = dynamicTimeTable.getLatestChanges();
-        transferUpdater.applyFullUpdates(changes, queryData, numberOfThreads, nowSeconds);
+        transferUpdater.applyFullUpdates(changes, queryData, numberOfThreads, nowSeconds, &phases);
         return AppliedUpdate(std::move(queryData), changes, statistics);
     });
-    return {std::move(timed.value), timed.duration};
+    return {std::move(timed.value), timed.duration, phases};
 }
 
 class IncrementalUpdateApplier {
@@ -459,9 +480,14 @@ public:
 
     AppliedUpdate operator()(DynamicTimeTable::Data& dynamicTimeTable,
                              TransferUpdater& transferUpdater,
-                             const DynamicTimeTable::PendingUpdates& updates) const {
-        return applyIncrementalUpdateTimed(dynamicTimeTable, transferUpdater, updates, numberOfThreads, nowSeconds)
-            .applied;
+                             const DynamicTimeTable::PendingUpdates& updates,
+                             PhaseTimings* outPhases = nullptr) const {
+        TimedAppliedUpdate timed =
+            applyIncrementalUpdateTimed(dynamicTimeTable, transferUpdater, updates, numberOfThreads, nowSeconds);
+        if (outPhases != nullptr) {
+            *outPhases += timed.phases;
+        }
+        return std::move(timed.applied);
     }
 
 private:
@@ -531,12 +557,14 @@ inline UpdateComparisonResult simulateApplyAndCompare(
     const int numberOfThreads,
     const std::vector<TransferSetKind>& transferSets,
     std::ostream* out = nullptr) {
+    PhaseTimings phases{};
     DynamicTimeTable::Algo::UpdateSimulationStats simStats{};
-    DynamicTimeTable::PendingUpdates updates = UpdateGenerator(simulationConfig)(dynamicTimeTable, nowSeconds, &simStats);
+    DynamicTimeTable::PendingUpdates updates =
+        UpdateGenerator(simulationConfig)(dynamicTimeTable, nowSeconds, &simStats, &phases);
     AppliedUpdate applied =
-        IncrementalUpdateApplier(numberOfThreads, nowSeconds)(dynamicTimeTable, transferUpdater, updates);
+        IncrementalUpdateApplier(numberOfThreads, nowSeconds)(dynamicTimeTable, transferUpdater, updates, &phases);
     const bool ok = RebuildComparator(transferSets, numberOfThreads)(transferUpdater, applied.queryData, out);
-    return {std::move(applied), std::move(updates), simStats, ok};
+    return {std::move(applied), std::move(updates), simStats, ok, phases};
 }
 
 }  // namespace DynamicTransferScenarios
