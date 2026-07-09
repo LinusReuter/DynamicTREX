@@ -673,6 +673,18 @@ struct DynamicQueryData {
         builder.routeStopSequences.resize(activeStopSequenceLength);
         builder.routeLabels.resize(activeRouteCount);
 
+        // Pre-size each route's departureTimes vector sequentially. Doing this inside the
+        // parallel topology loop below would serialize threads on the global allocator lock.
+        for (size_t i = 0; i < routes.size(); ++i) {
+            const auto& pRoute = routes[i];
+            if (pRoute.trips.empty()) continue;
+            const RouteId currentRoute = routeOffsets[i].flatRouteId;
+            builder.routeLabels[currentRoute].numberOfTrips = pRoute.trips.size();
+            if (!pRoute.stopSequence.empty()) {
+                builder.routeLabels[currentRoute].departureTimes.resize((pRoute.stopSequence.size() - 1) * pRoute.trips.size());
+            }
+        }
+
         std::vector<PersistentRouteId> flatToPersistentRoute(activeRouteCount);
         std::vector<PersistentTripId> flatToPersistentTrip(activeTripCount);
         std::vector<PersistentStopEventId> flatToPersistentEvent(activeEventCount);
@@ -700,11 +712,6 @@ struct DynamicQueryData {
 
             for (size_t stopIdx = 0; stopIdx < pRoute.stopSequence.size(); ++stopIdx) {
                 builder.routeStopSequences[currentStopSeqOffset + stopIdx] = pRoute.stopSequence[stopIdx];
-            }
-
-            builder.routeLabels[currentRoute].numberOfTrips = pRoute.trips.size();
-            if (!pRoute.stopSequence.empty()) {
-                builder.routeLabels[currentRoute].departureTimes.resize((pRoute.stopSequence.size() - 1) * pRoute.trips.size());
             }
 
             size_t tripOffset = 0;
