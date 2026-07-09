@@ -273,7 +273,7 @@ inline void buildInitialTransfers(TransferUpdater& updater,
                                   const DynamicQueryData& queryData,
                                   const TransferSetKind kind,
                                   const int numberOfThreads) {
-    updater.buildInitialFullTransfers(queryData);
+    updater.buildInitialFullTransfers(queryData, numberOfThreads);
     if (kind == TransferSetKind::Reduced) {
         updater.buildInitialMinimizedTransfers(queryData, numberOfThreads);
     }
@@ -283,7 +283,7 @@ inline void buildInitialTransfersForSelection(TransferUpdater& updater,
                                               const DynamicQueryData& queryData,
                                               const TransferSetSelection selection,
                                               const int numberOfThreads) {
-    updater.buildInitialFullTransfers(queryData);
+    updater.buildInitialFullTransfers(queryData, numberOfThreads);
     if (selection != TransferSetSelection::Full) {
         updater.buildInitialMinimizedTransfers(queryData, numberOfThreads);
     }

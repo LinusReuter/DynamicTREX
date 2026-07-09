@@ -95,7 +95,7 @@ public:
     /**
      * @brief Full rebuild: clears the store and (re)discovers all outgoing transfers.
      */
-    void buildInitialFullTransfers(const DynamicQueryData& queryData) {
+    void buildInitialFullTransfers(const DynamicQueryData& queryData, const int numberOfThreads = 1) {
         queryData_ = &queryData;
 
         // Total number of persistent stop events
@@ -114,7 +114,12 @@ public:
         const NodeID maxEventId = NodeID(eventCount - 1);
         store_.begin_outgoing_init(maxEventId);
 
-        // 3) Discover all outgoing transfers (no diff; init-only add)
+        // 3) Discover all outgoing transfers (no diff; init-only add). Each iteration
+        // writes only to its own event's outgoing slot (pre-sized by begin_outgoing_init),
+        // so this is safe to parallelize without locking.
+        const int threads = std::max(1, numberOfThreads);
+        omp_set_num_threads(threads);
+#pragma omp parallel for schedule(dynamic, 1024) if (threads > 1)
         for (std::size_t i = 0; i < eventCount; ++i) {
             PersistentStopEventId event(i);
 
