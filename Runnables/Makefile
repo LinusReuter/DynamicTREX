@@ -139,6 +139,12 @@ ifneq ($(IS_ARM),)
 	PREFETCH += -DUSE_NEON
 endif
 
+# Optional: enable the compile-gated time-cutoff optimization in TransferUpdate
+# Usage: make DynamicRelease DYN_TRANSFER_TIME_CUTOFF=1
+ifdef DYN_TRANSFER_TIME_CUTOFF
+	PREFETCH += -DDYN_TRANSFER_TIME_CUTOFF
+endif
+
 # Libraries: default assumes GCC; clang debug builds on macOS usually don't have libatomic
 LIBS_DEFAULT = -ltbb -latomic
 LIBS_DEBUG = $(LIBS_DEFAULT)
