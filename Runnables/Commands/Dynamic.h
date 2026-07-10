@@ -1,7 +1,6 @@
 #pragma once
 
 #include <algorithm>
-#include <cstdio>
 #include <fstream>
 #include <string>
 
@@ -196,7 +195,6 @@ public:
         addParameter("Base Random seed", "1");
         addParameter("Iterations", "200");
         addParameter("Output File Path", "simulation_output.txt");
-        addParameter("Temp Store Path", "base_store.tmp");
         addParameter("Timing CSV output path", "");
         addSimulationRateParameters("100", "100", "100");
         addTransferSetParameters();
@@ -208,7 +206,6 @@ public:
         const int nowSeconds = getParameter<int>("Current time (seconds)");
         const uint32_t baseSeed = static_cast<uint32_t>(getParameter<int>("Base Random seed"));
         const int iterations = getParameter<int>("Iterations");
-        const std::string tempStorePath = getParameter("Temp Store Path");
         const TransferSetConfig transfers = transferSetConfig();
 
         DynamicTimeTable::Data baseDynamicTimeTable =
@@ -216,13 +213,13 @@ public:
         const auto baseQueryData = QueryDataBuilder()(baseDynamicTimeTable, "initial Base DynamicQueryData");
         validateDynamicQueryData(baseQueryData, baseDynamicTimeTable, "Initial");
 
-        TransferStoreType baseStore;
-        TransferUpdater baseTransferUpdater(baseStore);
-        InitialTransferStoreBuilder(transfers.selection, transfers.threads)(baseTransferUpdater, baseQueryData);
-        InitialExportValidator(transfers.kinds, transfers.threads)(baseTransferUpdater, baseQueryData);
 
-        std::cout << "Serializing baseline store to disk..." << std::endl;
-        baseStore.serialize(tempStorePath);
+        {
+            TransferStoreType baseStore;
+            TransferUpdater baseTransferUpdater(baseStore);
+            InitialTransferStoreBuilder(transfers.selection, transfers.threads)(baseTransferUpdater, baseQueryData);
+            InitialExportValidator(transfers.kinds, transfers.threads)(baseTransferUpdater, baseQueryData);
+        }
 
         std::ofstream outFile(getParameter("Output File Path"));
         if (!outFile) {
@@ -250,8 +247,9 @@ public:
                       << " (Seed: " << currentSeed << ")..." << std::flush;
 
             DynamicTimeTable::Data dynamicTimeTableCopy = baseDynamicTimeTable;
-            TransferStoreType storeCopy(tempStorePath);
+            TransferStoreType storeCopy;
             TransferUpdater transferUpdater(storeCopy);
+            InitialTransferStoreBuilder(transfers.selection, transfers.threads)(transferUpdater, baseQueryData);
 
             outFile << "=== Iteration: " << (i + 1) << " | Seed: " << currentSeed << " ===\n";
             const UpdateComparisonResult result = simulateApplyAndCompare(dynamicTimeTableCopy,
@@ -280,7 +278,6 @@ public:
             }
         }
 
-        std::remove(tempStorePath.c_str());
         if (!divergenceFound) {
             std::cout << "\nAll iterations completed successfully. No transfer divergences found." << std::endl;
         }
@@ -340,7 +337,7 @@ public:
         TransferUpdater transferUpdater(store);
         InitialTransferStoreBuilder(transfers.selection, transfers.threads)(transferUpdater, queryData);
 
-        bool divergenceFound = false;
+        std::vector<std::pair<int, uint32_t>> divergences;  // (time, seed) of every failing step
         int stepIndex = 0;
         for (int now = startTimeSeconds; now < endTimeSeconds; now += stepSeconds, ++stepIndex) {
             const uint32_t seed = baseSeed + static_cast<uint32_t>(stepIndex);
@@ -366,23 +363,29 @@ public:
             }
 
             if (!result.ok) {
-                divergenceFound = true;
-                std::cout << "\n\n!!! TIMELINE DIVERGENCE DETECTED !!!" << std::endl;
-                std::cout << "Current time (seconds): " << now << std::endl;
-                std::cout << "Replication Seed: " << seed << std::endl;
-                std::cout << "Check file details at: " << getParameter("Output File Path") << std::endl;
+                divergences.emplace_back(now, seed);
+                std::cout << "\n!!! TIMELINE DIVERGENCE #" << divergences.size()
+                          << " at t=" << now << "s (Seed: " << seed << ") !!!" << std::endl;
                 if (result.applied.changes != nullptr) {
                     outFile << "\n[!] CRITICAL TIMELINE DIVERGENCE AT t=" << now << " SEED=" << seed << "\n";
                     printChangeDetails(*result.applied.changes, outFile);
                 }
-                break;
             }
         }
 
-        if (!divergenceFound) {
+        if (divergences.empty()) {
             std::cout << "\nTimeline comparison completed successfully from " << startTimeSeconds
                       << " to " << endTimeSeconds << " seconds in " << stepSeconds
                       << " second steps." << std::endl;
+        } else {
+            std::cout << "\nTimeline completed with " << divergences.size() << " divergence(s) across "
+                      << stepIndex << " step(s). Failing (time, seed) samples:" << std::endl;
+            outFile << "\n=== Divergence summary: " << divergences.size() << " failing step(s) ===\n";
+            for (const auto& [t, s] : divergences) {
+                std::cout << "  t=" << t << "s  seed=" << s << std::endl;
+                outFile << "  t=" << t << "s  seed=" << s << "\n";
+            }
+            std::cout << "Check per-step details at: " << getParameter("Output File Path") << std::endl;
         }
         printPhaseTimingsSummary(timingAccumulator);
     }
