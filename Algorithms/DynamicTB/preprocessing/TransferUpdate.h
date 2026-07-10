@@ -14,6 +14,7 @@
 
 #include "../../../DataStructures/DynamicTimeTable/UpdateTypes.h"
 #include "../../../DataStructures/TransferStore/ITransferStore.h"
+#include "../../../Helpers/MultiThreading.h"
 #include "../../../Helpers/PhaseTimings.h"
 #include "../../../Helpers/Timer.h"
 #include "../../../Helpers/Types.h"
@@ -119,19 +120,23 @@ public:
         // so this is safe to parallelize without locking.
         const int threads = std::max(1, numberOfThreads);
         omp_set_num_threads(threads);
-#pragma omp parallel for schedule(dynamic, 1024) if (threads > 1)
-        for (std::size_t i = 0; i < eventCount; ++i) {
-            PersistentStopEventId event(i);
+#pragma omp parallel if (threads > 1)
+        {
+            if (omp_get_num_threads() > 1) pinThreadToCoreId(omp_get_thread_num() % numberOfCores());
+#pragma omp for schedule(dynamic, 1024)
+            for (std::size_t i = 0; i < eventCount; ++i) {
+                PersistentStopEventId event(i);
 
-            // Skip invalid/removed events
-            StopEventId flatEvent = queryData_->persistentToFlatEvent[i];
-            if (flatEvent == noStopEvent) continue;
+                // Skip invalid/removed events
+                StopEventId flatEvent = queryData_->persistentToFlatEvent[i];
+                if (flatEvent == noStopEvent) continue;
 
-            std::vector<PersistentStopEventId> desired;
-            computeOutgoingTransfers(flatEvent, desired);
-            if (!desired.empty()) {
-                store_.reserve_outgoing(event, desired.size());
-                store_.add_outgoing_edges_init(event, desired, TransferMeta{false});
+                std::vector<PersistentStopEventId> desired;
+                computeOutgoingTransfers(flatEvent, desired);
+                if (!desired.empty()) {
+                    store_.reserve_outgoing(event, desired.size());
+                    store_.add_outgoing_edges_init(event, desired, TransferMeta{false});
+                }
             }
         }
 
@@ -171,6 +176,7 @@ public:
         // Phase 1: Parallel Cancellations
 #pragma omp parallel if (threads > 1)
         {
+            if (omp_get_num_threads() > 1) pinThreadToCoreId(omp_get_thread_num() % numberOfCores());
             std::vector<MinTarget> localTrips;
             std::vector<std::pair<NodeID, TransferMeta>> removedIncoming;
 #pragma omp for schedule(dynamic, 16)
@@ -198,6 +204,7 @@ public:
         // Phase 2: Parallel Outgoing Discovery
 #pragma omp parallel if (threads > 1)
         {
+            if (omp_get_num_threads() > 1) pinThreadToCoreId(omp_get_thread_num() % numberOfCores());
             std::vector<MinTarget> localTrips;
 #pragma omp for schedule(dynamic, 16)
             for (const auto i : toDiscoverOutgoing) {
@@ -214,6 +221,7 @@ public:
         std::vector<PendingDominationCleanup> globalPendingCleanups;
 #pragma omp parallel if (threads > 1)
         {
+            if (omp_get_num_threads() > 1) pinThreadToCoreId(omp_get_thread_num() % numberOfCores());
             std::vector<MinTarget> localTrips;
             std::vector<PendingDominationCleanup> localCleanups;
 #pragma omp for schedule(dynamic, 16)
@@ -247,6 +255,7 @@ public:
         //      unaffected and skipped. getEventsOfTrip() returns events in stop-index order.
 #pragma omp parallel if (threads > 1)
         {
+            if (omp_get_num_threads() > 1) pinThreadToCoreId(omp_get_thread_num() % numberOfCores());
             std::vector<MinTarget> localTrips;
 #pragma omp for schedule(dynamic, 1024)
             for (const auto& [changedTrip, maxChangedIndex] : changes.tripsWithChangedArrivals) {
@@ -380,22 +389,26 @@ private:
         omp_set_num_threads(threads);
 
 // Pass 1: Directly map out-degrees to the flat event indices in parallel
-#pragma omp parallel for schedule(dynamic, 1024) if (threads > 1)
-        for (std::size_t pFrom = 0; pFrom < persistentCount; ++pFrom) {
-            const StopEventId flatFrom = queryData.persistentToFlatEvent[pFrom];
-            if (flatFrom == noStopEvent) continue;
+#pragma omp parallel if (threads > 1)
+        {
+            if (omp_get_num_threads() > 1) pinThreadToCoreId(omp_get_thread_num() % numberOfCores());
+#pragma omp for schedule(dynamic, 1024)
+            for (std::size_t pFrom = 0; pFrom < persistentCount; ++pFrom) {
+                const StopEventId flatFrom = queryData.persistentToFlatEvent[pFrom];
+                if (flatFrom == noStopEvent) continue;
 
-            Edge degree = Edge(0);
-            if constexpr (OnlyMinimized) {
-                for (const auto& [to, meta] : store_.outgoing_sorted(NodeID(pFrom))) {
-                    if (meta.isMinimized && queryData.persistentToFlatEvent[to] != noStopEvent) {
-                        ++degree;
+                Edge degree = Edge(0);
+                if constexpr (OnlyMinimized) {
+                    for (const auto& [to, meta] : store_.outgoing_sorted(NodeID(pFrom))) {
+                        if (meta.isMinimized && queryData.persistentToFlatEvent[to] != noStopEvent) {
+                            ++degree;
+                        }
                     }
+                } else {
+                    degree = Edge(store_.out_degree(NodeID(pFrom)));
                 }
-            } else {
-                degree = Edge(store_.out_degree(NodeID(pFrom)));
+                beginOut[static_cast<std::size_t>(flatFrom) + 1] = degree;
             }
-            beginOut[static_cast<std::size_t>(flatFrom) + 1] = degree;
         }
 
         // Pass 2: Prefix sum
@@ -407,25 +420,29 @@ private:
         std::vector<TripBased::EdgeLabel> labels(edgeCount);
         std::vector<int> travelTime(edgeCount);
 
-#pragma omp parallel for schedule(dynamic, 1024) if (threads > 1)
-        for (std::size_t pFrom = 0; pFrom < persistentCount; ++pFrom) {
-            const StopEventId flatFrom = queryData.persistentToFlatEvent[pFrom];
-            if (flatFrom == noStopEvent) continue;
+#pragma omp parallel if (threads > 1)
+        {
+            if (omp_get_num_threads() > 1) pinThreadToCoreId(omp_get_thread_num() % numberOfCores());
+#pragma omp for schedule(dynamic, 1024)
+            for (std::size_t pFrom = 0; pFrom < persistentCount; ++pFrom) {
+                const StopEventId flatFrom = queryData.persistentToFlatEvent[pFrom];
+                if (flatFrom == noStopEvent) continue;
 
-            const Time fromArrivalTime = queryData.arrivalTimeOfEvent(flatFrom);
-            Edge currentEdgeOffset = beginOut[flatFrom];
+                const Time fromArrivalTime = queryData.arrivalTimeOfEvent(flatFrom);
+                Edge currentEdgeOffset = beginOut[flatFrom];
 
-            for (const auto& [to, meta] : store_.outgoing_sorted(NodeID(pFrom))) {
-                if constexpr (OnlyMinimized) {
-                    if (!meta.isMinimized) continue;
+                for (const auto& [to, meta] : store_.outgoing_sorted(NodeID(pFrom))) {
+                    if constexpr (OnlyMinimized) {
+                        if (!meta.isMinimized) continue;
+                    }
+                    const StopEventId flatTo = queryData.persistentToFlatEvent[to];
+                    if (flatTo == noStopEvent) continue;
+
+                    const Edge exportEdge = currentEdgeOffset++;
+                    const TripId trip = queryData.tripOfEvent(flatTo);
+                    labels[exportEdge].init(flatTo, trip, qd.firstStopEventOfTrip[trip]);
+                    travelTime[exportEdge] = static_cast<int>(queryData.departureTimeOfEvent(flatTo) - fromArrivalTime);
                 }
-                const StopEventId flatTo = queryData.persistentToFlatEvent[to];
-                if (flatTo == noStopEvent) continue;
-
-                const Edge exportEdge = currentEdgeOffset++;
-                const TripId trip = queryData.tripOfEvent(flatTo);
-                labels[exportEdge].init(flatTo, trip, qd.firstStopEventOfTrip[trip]);
-                travelTime[exportEdge] = static_cast<int>(queryData.departureTimeOfEvent(flatTo) - fromArrivalTime);
             }
         }
         return {std::move(beginOut), std::move(labels), std::move(travelTime)};
@@ -861,6 +878,7 @@ private:
         omp_set_num_threads(threads);
 #pragma omp parallel if (threads > 1)
         {
+            if (omp_get_num_threads() > 1) pinThreadToCoreId(omp_get_thread_num() % numberOfCores());
             std::vector localLabels(numStops, StopLabel());
             std::vector<TransferCandidate> localCandidates;
             int localTimestamp = 0;

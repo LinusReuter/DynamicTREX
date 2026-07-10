@@ -6,6 +6,7 @@
 
 
 #include "../../DataStructures/DynamicTimeTable/Data.h"
+#include "../../Helpers/MultiThreading.h"
 #include "../../Helpers/Types.h"
 #include "../TripBased/Query/Types.h"
 
@@ -694,7 +695,10 @@ struct DynamicQueryData {
         std::vector<StopEventId> persistentToFlatEvent(events.size(), (StopEventId)-1);
 
         // 3. Topology & Translation Mapping (Parallelized)
-#pragma omp parallel for
+#pragma omp parallel
+        {
+            if (omp_get_num_threads() > 1) pinThreadToCoreId(omp_get_thread_num() % numberOfCores());
+#pragma omp for
         for (size_t rIdx = 0; rIdx < routes.size(); ++rIdx) {
             const auto& pRoute = routes[rIdx];
             if (pRoute.trips.empty()) continue;
@@ -750,6 +754,7 @@ struct DynamicQueryData {
                 currentTrip++;
                 tripOffset++;
             }
+        }
         }
         // Set final sentinel bounds natively outside the loop
         builder.firstTripOfRoute[activeRouteCount] = TripId(activeTripCount);
