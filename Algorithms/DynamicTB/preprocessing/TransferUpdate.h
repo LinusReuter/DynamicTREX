@@ -271,7 +271,7 @@ public:
 
                 // (b) UPSTREAM: re-minimize sources feeding stops before the last change.
                 const std::size_t limit =
-                    std::min(static_cast<std::size_t>(maxChangedIndex), events.size());
+                    std::min(static_cast<std::size_t>(maxChangedIndex) + 1, events.size());
                 for (std::size_t idx = 0; idx < limit; ++idx) {
                     for (const auto from : store_.incoming_sorted(events[idx])) {
                         recordSourceTripOfEvent(from, localTrips);
