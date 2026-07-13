@@ -542,52 +542,59 @@ struct DynamicQueryData {
             }
         }
 
-        // FIFO check per route (with implicit buffer times reverted)
+        // FIFO ordering + Route-Uniform Forbidden-Stop Invariant, per route.
+        //   - FIFO: arrivals/departures are non-decreasing from one trip to the next.
+        //   - Uniformity: consecutive trips must forbid boarding (departure == noTime) / alighting
+        //     (arrival == noTime) at the same interior stops; agreement across every adjacent pair
+        //     is uniformity across the whole route by transitivity.
         for (size_t rIdx = 0; rIdx < numRoutes; ++rIdx) {
             const size_t tripBegin = static_cast<size_t>(qd.firstTripOfRoute[rIdx]);
             const size_t tripEnd = static_cast<size_t>(qd.firstTripOfRoute[rIdx + 1]);
             if (tripEnd <= tripBegin + 1) continue;
 
             const size_t stopSeqStart = qd.firstStopIdOfRoute[rIdx];
-            const size_t stopSeqEnd = qd.firstStopIdOfRoute[rIdx + 1];
-            const size_t numStopsOnRoute = stopSeqEnd - stopSeqStart;
+            const size_t numStopsOnRoute = qd.firstStopIdOfRoute[rIdx + 1] - stopSeqStart;
             if (numStopsOnRoute == 0) continue;
 
             for (size_t i = tripBegin; i + 1 < tripEnd; ++i) {
-                const size_t tripA = i;
-                const size_t tripB = i + 1;
-                const size_t startA = static_cast<size_t>(qd.firstStopEventOfTrip[tripA]);
-                const size_t startB = static_cast<size_t>(qd.firstStopEventOfTrip[tripB]);
-
-                const StopId stop0 = qd.routeStopSequences[stopSeqStart];
-                const int64_t depA0 = adjustedDeparture(stop0, qd.eventDepTimes[startA]);
-                const int64_t depB0 = adjustedDeparture(stop0, qd.eventDepTimes[startB]);
-                if (depA0 > depB0) {
-                    error_msg << "FIFO violation on route " << rIdx << ": trip " << tripA << " departs at " << depA0
-                              << " but next trip " << tripB << " departs earlier at " << depB0;
-                    return {false, error_msg.str()};
-                }
+                const size_t startA = static_cast<size_t>(qd.firstStopEventOfTrip[i]);
+                const size_t startB = static_cast<size_t>(qd.firstStopEventOfTrip[i + 1]);
 
                 for (size_t s = 0; s < numStopsOnRoute; ++s) {
                     const StopId stop = qd.routeStopSequences[stopSeqStart + s];
-                    const size_t eventA = startA + s;
-                    const size_t eventB = startB + s;
-                    const int64_t arrA = adjustedArrival(stop, qd.eventArrTimes[eventA]);
-                    const int64_t arrB = adjustedArrival(stop, qd.eventArrTimes[eventB]);
-                    const int64_t depA = adjustedDeparture(stop, qd.eventDepTimes[eventA]);
-                    const int64_t depB = adjustedDeparture(stop, qd.eventDepTimes[eventB]);
+                    const int64_t arrA = adjustedArrival(stop, qd.eventArrTimes[startA + s]);
+                    const int64_t arrB = adjustedArrival(stop, qd.eventArrTimes[startB + s]);
+                    const int64_t depA = adjustedDeparture(stop, qd.eventDepTimes[startA + s]);
+                    const int64_t depB = adjustedDeparture(stop, qd.eventDepTimes[startB + s]);
 
-                    if (arrA > arrB) {
-                        error_msg << "FIFO violation (arrival) on route " << rIdx << " at stop " << s << ": trip "
-                                  << tripA << " arrives at " << arrA << " but next trip " << tripB
-                                  << " arrives earlier at " << arrB;
-                        return {false, error_msg.str()};
+                    // Alighting is meaningful at interior stops [1 .. last]; skip the dead first-stop arrival.
+                    if (s != 0) {
+                        if ((arrA == noTimeValue) != (arrB == noTimeValue)) {
+                            error_msg << "Non-uniform forbidden alighting on route " << rIdx << " at stop " << s
+                                      << ": trips " << i << " and " << (i + 1) << " disagree";
+                            return {false, error_msg.str()};
+                        }
+                        // Uniformity above guarantees arrB is real whenever arrA is.
+                        if (arrA != noTimeValue && arrA > arrB) {
+                            error_msg << "FIFO violation (arrival) on route " << rIdx << " at stop " << s << ": trip "
+                                      << i << " arrives at " << arrA << " but next trip " << (i + 1)
+                                      << " arrives earlier at " << arrB;
+                            return {false, error_msg.str()};
+                        }
                     }
-                    if (depA > depB) {
-                        error_msg << "FIFO violation (departure) on route " << rIdx << " at stop " << s << ": trip "
-                                  << tripA << " departs at " << depA << " but next trip " << tripB
-                                  << " departs earlier at " << depB;
-                        return {false, error_msg.str()};
+                    // Boarding is meaningful at interior stops [0 .. last-1]; skip the dead last-stop departure.
+                    if (s + 1 != numStopsOnRoute) {
+                        if ((depA == noTimeValue) != (depB == noTimeValue)) {
+                            error_msg << "Non-uniform forbidden boarding on route " << rIdx << " at stop " << s
+                                      << ": trips " << i << " and " << (i + 1) << " disagree";
+                            return {false, error_msg.str()};
+                        }
+                        if (depA != noTimeValue && depA > depB) {
+                            error_msg << "FIFO violation (departure) on route " << rIdx << " at stop " << s << ": trip "
+                                      << i << " departs at " << depA << " but next trip " << (i + 1)
+                                      << " departs earlier at " << depB;
+                            return {false, error_msg.str()};
+                        }
                     }
                 }
             }
