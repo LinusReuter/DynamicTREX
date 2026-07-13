@@ -563,6 +563,14 @@ inline UpdateComparisonResult simulateApplyAndCompare(
         UpdateGenerator(simulationConfig)(dynamicTimeTable, nowSeconds, &simStats, &phases);
     AppliedUpdate applied =
         IncrementalUpdateApplier(numberOfThreads, nowSeconds)(dynamicTimeTable, transferUpdater, updates, &phases);
+
+    if (out != nullptr) {
+        const auto postCheck = applied.queryData.validate(dynamicTimeTable);
+        if (!postCheck.first) {
+            *out << "[POST-UPDATE QUERYDATA INVARIANT VIOLATED] " << postCheck.second << "\n";
+        }
+    }
+
     const bool ok = RebuildComparator(transferSets, numberOfThreads)(transferUpdater, applied.queryData, out);
     return {std::move(applied), std::move(updates), simStats, ok, phases};
 }
