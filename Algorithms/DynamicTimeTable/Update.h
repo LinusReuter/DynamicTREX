@@ -503,8 +503,12 @@ private:
                 low = mid + 1;
             }
         }
-        auto insertIdx = static_cast<std::uint32_t>(low);
-        return insertIdx;
+
+        if (low > 0 && compareFifo(data, events, list[low - 1]) != 1) return std::nullopt;
+        if (low < static_cast<std::int32_t>(list.size()) && compareFifo(data, events, list[low]) != -1)
+            return std::nullopt;
+
+        return static_cast<std::uint32_t>(low);
     }
 
     static void finalizeChangeSummery(const Data& data, UpdateContext& context) {
