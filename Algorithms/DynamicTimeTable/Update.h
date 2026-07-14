@@ -192,80 +192,33 @@ private:
 
     static void enforceFifo(Data& data, UpdateContext& context) {
         for (auto& [routeId, modTrips] : context.modifiedTripsByRoute) {
-            auto& list = data.routes_[routeId].trips;
+            if (!data.isRoute(routeId)) continue;
+            const auto& list = data.routes_[routeId].trips;
             if (list.size() < 2) continue;
 
-            // Map tripId -> set of violating tripIds
-            std::unordered_map<PersistentTripId, std::unordered_set<PersistentTripId>> violations;
+            const std::unordered_set<PersistentTripId> modified(modTrips.begin(), modTrips.end());
 
-            for (PersistentTripId m_id : modTrips) {
-                auto it = std::ranges::find(list, m_id);
-                if (it == list.end()) continue;
-                std::ptrdiff_t idx = std::distance(list.begin(), it);
+            std::vector<PersistentTripId> kept;
+            kept.reserve(list.size());
+            std::vector<PersistentTripId> toExtract;
 
-                // Check backwards (list[i] is expected to be strictly BEFORE m_id)
-                for (std::ptrdiff_t i = idx - 1; i >= 0; --i) {
-                    int cmp = compareFifo(data, list[i], m_id);
-
-                    if (cmp != -1) {
-                        // cmp == 0 (crossover) or cmp == 1 (inversion) are both structural violations
-                        violations[m_id].insert(list[i]);
-                        violations[list[i]].insert(m_id);
-                    } else {
-                        // list[i] is completely and safely BEFORE m_id.
-                        // As the list maintains chronological order, we can safely stop scanning backwards.
-                        break;
-                    }
+            for (const PersistentTripId t : list) {
+                // Drop already-kept *modified* trips that the followup inverts/crosses.
+                while (!kept.empty() && modified.contains(kept.back()) &&
+                       compareFifo(data, kept.back(), t) != -1) {
+                    toExtract.push_back(kept.back());
+                    kept.pop_back();
                 }
 
-                // Check forwards (m_id is expected to be strictly BEFORE list[i])
-                for (std::ptrdiff_t i = idx + 1; i < static_cast<std::ptrdiff_t>(list.size()); ++i) {
-                    int cmp = compareFifo(data, m_id, list[i]);
-
-                    if (cmp != -1) {
-                        // cmp == 0 (crossover) or cmp == 1 (inversion) are both structural violations
-                        violations[m_id].insert(list[i]);
-                        violations[list[i]].insert(m_id);
-                    } else {
-                        // m_id is completely and safely BEFORE list[i].
-                        // We can safely stop scanning forwards.
-                        break;
-                    }
+                if (!kept.empty() && compareFifo(data, kept.back(), t) != -1) {
+                    toExtract.push_back(t);  // blocked by an unmodified survivor -> t must go
+                } else {
+                    kept.push_back(t);
                 }
             }
 
-            // Greedily extract worst offenders
-            while (!violations.empty()) {
-                PersistentTripId worstTrip = noPersistentTripId;
-                std::size_t maxDegree = 0;
-
-                for (const auto& [t, vSet] : violations) {
-                    if (vSet.size() > maxDegree) {
-                        maxDegree = vSet.size();
-                        worstTrip = t;
-                    } else if (vSet.size() == maxDegree && maxDegree > 0) {
-                        // Deterministic tie-break
-                        if (static_cast<std::size_t>(t) > static_cast<std::size_t>(worstTrip)) {
-                            worstTrip = t;
-                        }
-                    }
-                }
-
-                if (maxDegree == 0) break;
-
-                std::vector<PersistentStopEventId> preActiveEvents = collectActiveEvents(data, worstTrip);
-                extractTrip(data, worstTrip, context, std::move(preActiveEvents));
-
-                // The trip was removed from routes_[routeId].trips inside extractTrip.
-                // Now clean up the localized violation graph.
-                const auto& neighbors = violations[worstTrip];
-                for (PersistentTripId n : neighbors) {
-                    violations[n].erase(worstTrip);
-                    if (violations[n].empty()) {
-                        violations.erase(n);
-                    }
-                }
-                violations.erase(worstTrip);
+            for (const PersistentTripId victim : toExtract) {
+                extractTrip(data, victim, context, collectActiveEvents(data, victim));
             }
         }
     }
