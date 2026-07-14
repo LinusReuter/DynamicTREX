@@ -24,6 +24,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 **********************************************************************************/
 #pragma once
 
+#include <cassert>
+
 #include "../../../Helpers/Types.h"
 #include "../../../DataStructures/TripBased/Data.h"
 
@@ -345,22 +347,64 @@ inline std::vector<SimpleEdge> extractTopology(const Transfers& transfers) {
 /**
  * Compares two Transfers instances purely by their network topology.
  * Returns lists of edges unique to either the first or second instance.
+ *
+ * Both instances are expected to share the same CSR vertex numbering (i.e. they were
+ * exported for the same DynamicQueryData), so rows can be compared directly by index
+ * instead of materializing and sorting the full edge lists of both graphs.
  */
 inline TransferComparisonResult compareTransfers(const Transfers& lhs, const Transfers& rhs) {
-    std::vector<SimpleEdge> lhsEdges = extractTopology(lhs);
-    std::vector<SimpleEdge> rhsEdges = extractTopology(rhs);
-
     TransferComparisonResult result;
+    if (lhs.beginOut.empty() || rhs.beginOut.empty()) return result;
 
-    // Find edges that exist ONLY in the first transfer set
-    std::set_difference(lhsEdges.begin(), lhsEdges.end(),
-                        rhsEdges.begin(), rhsEdges.end(),
-                        std::back_inserter(result.onlyInFirst));
+    assert(lhs.beginOut.size() == rhs.beginOut.size());
+    const std::size_t numVertices = lhs.beginOut.size() - 1;
 
-    // Find edges that exist ONLY in the second transfer set
-    std::set_difference(rhsEdges.begin(), rhsEdges.end(),
-                        lhsEdges.begin(), lhsEdges.end(),
-                        std::back_inserter(result.onlyInSecond));
+    std::vector<uint32_t> lhsTargets;
+    std::vector<uint32_t> rhsTargets;
+
+    for (std::size_t fromVertex = 0; fromVertex < numVertices; ++fromVertex) {
+        const std::size_t lhsBegin = lhs.beginOut[fromVertex];
+        const std::size_t lhsEnd = lhs.beginOut[fromVertex + 1];
+        const std::size_t rhsBegin = rhs.beginOut[fromVertex];
+        const std::size_t rhsEnd = rhs.beginOut[fromVertex + 1];
+
+        lhsTargets.clear();
+        rhsTargets.clear();
+        lhsTargets.reserve(lhsEnd - lhsBegin);
+        rhsTargets.reserve(rhsEnd - rhsBegin);
+
+        for (std::size_t edgeIdx = lhsBegin; edgeIdx < lhsEnd; ++edgeIdx) {
+            lhsTargets.push_back(static_cast<uint32_t>(lhs.labels[edgeIdx].getStopEvent() - 1));
+        }
+        for (std::size_t edgeIdx = rhsBegin; edgeIdx < rhsEnd; ++edgeIdx) {
+            rhsTargets.push_back(static_cast<uint32_t>(rhs.labels[edgeIdx].getStopEvent() - 1));
+        }
+
+        std::sort(lhsTargets.begin(), lhsTargets.end());
+        std::sort(rhsTargets.begin(), rhsTargets.end());
+
+        const uint32_t from = static_cast<uint32_t>(fromVertex);
+        std::size_t li = 0;
+        std::size_t ri = 0;
+        while (li < lhsTargets.size() && ri < rhsTargets.size()) {
+            if (lhsTargets[li] < rhsTargets[ri]) {
+                result.onlyInFirst.push_back({from, lhsTargets[li]});
+                ++li;
+            } else if (rhsTargets[ri] < lhsTargets[li]) {
+                result.onlyInSecond.push_back({from, rhsTargets[ri]});
+                ++ri;
+            } else {
+                ++li;
+                ++ri;
+            }
+        }
+        while (li < lhsTargets.size()) {
+            result.onlyInFirst.push_back({from, lhsTargets[li++]});
+        }
+        while (ri < rhsTargets.size()) {
+            result.onlyInSecond.push_back({from, rhsTargets[ri++]});
+        }
+    }
 
     return result;
 }
