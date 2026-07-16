@@ -447,11 +447,16 @@ private:
     DynamicTimeTable::Algo::UpdateSimulationConfig config;
 };
 
+// exportKinds selects which transfer set(s) get exported (and timed into
+// phases.exportPhase) after minimization, mirroring the configured "Transfer set"
+// parameter (full/reduced/both). Empty by default: callers that don't care about
+// export timing (e.g. RebuildComparator's own validation-only exports) pay nothing.
 inline TimedAppliedUpdate applyIncrementalUpdateTimed(DynamicTimeTable::Data& dynamicTimeTable,
                                                        TransferUpdater& transferUpdater,
                                                        const DynamicTimeTable::PendingUpdates& updates,
                                                        const int numberOfThreads,
-                                                       const int nowSeconds = TransferUpdater::noTimeCutoff) {
+                                                       const int nowSeconds = TransferUpdater::noTimeCutoff,
+                                                       const std::vector<TransferSetKind>& exportKinds = {}) {
     PhaseTimings phases{};
     auto timed = runTimed([&]() {
         Timer timetableTimer;
@@ -467,6 +472,11 @@ inline TimedAppliedUpdate applyIncrementalUpdateTimed(DynamicTimeTable::Data& dy
 
         const DynamicTimeTable::ChangeSummary& changes = dynamicTimeTable.getLatestChanges();
         transferUpdater.applyFullUpdates(changes, queryData, numberOfThreads, nowSeconds, &phases);
+
+        for (const TransferSetKind kind : exportKinds) {
+            exportTransfers(transferUpdater, queryData, kind, numberOfThreads, &phases);
+        }
+
         return AppliedUpdate(std::move(queryData), changes, statistics);
     });
     return {std::move(timed.value), timed.duration, phases};
@@ -475,15 +485,16 @@ inline TimedAppliedUpdate applyIncrementalUpdateTimed(DynamicTimeTable::Data& dy
 class IncrementalUpdateApplier {
 public:
     explicit IncrementalUpdateApplier(const int numberOfThreads,
-                                      const int nowSeconds = TransferUpdater::noTimeCutoff)
-        : numberOfThreads(numberOfThreads), nowSeconds(nowSeconds) {}
+                                      const int nowSeconds = TransferUpdater::noTimeCutoff,
+                                      std::vector<TransferSetKind> exportKinds = {})
+        : numberOfThreads(numberOfThreads), nowSeconds(nowSeconds), exportKinds(std::move(exportKinds)) {}
 
     AppliedUpdate operator()(DynamicTimeTable::Data& dynamicTimeTable,
                              TransferUpdater& transferUpdater,
                              const DynamicTimeTable::PendingUpdates& updates,
                              PhaseTimings* outPhases = nullptr) const {
-        TimedAppliedUpdate timed =
-            applyIncrementalUpdateTimed(dynamicTimeTable, transferUpdater, updates, numberOfThreads, nowSeconds);
+        TimedAppliedUpdate timed = applyIncrementalUpdateTimed(dynamicTimeTable, transferUpdater, updates,
+                                                                numberOfThreads, nowSeconds, exportKinds);
         if (outPhases != nullptr) {
             *outPhases += timed.phases;
         }
@@ -493,6 +504,7 @@ public:
 private:
     int numberOfThreads;
     int nowSeconds;
+    std::vector<TransferSetKind> exportKinds;
 };
 
 class RebuildComparator {
@@ -561,8 +573,8 @@ inline UpdateComparisonResult simulateApplyAndCompare(
     DynamicTimeTable::Algo::UpdateSimulationStats simStats{};
     DynamicTimeTable::PendingUpdates updates =
         UpdateGenerator(simulationConfig)(dynamicTimeTable, nowSeconds, &simStats, &phases);
-    AppliedUpdate applied =
-        IncrementalUpdateApplier(numberOfThreads, nowSeconds)(dynamicTimeTable, transferUpdater, updates, &phases);
+    AppliedUpdate applied = IncrementalUpdateApplier(numberOfThreads, nowSeconds, transferSets)(
+        dynamicTimeTable, transferUpdater, updates, &phases);
 
     if (out != nullptr) {
         const auto postCheck = applied.queryData.validate(dynamicTimeTable);

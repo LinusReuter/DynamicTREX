@@ -102,14 +102,15 @@ public:
         addParameter("Input binary (DynamicTimeTable Data)");
         addParameter("Current time (seconds)");
         addSimulationParameters("42");
-        addParameter("Number of threads", "max");
+        addTransferSetParameters();
     }
 
     virtual void execute() noexcept override {
         using namespace DynamicTransferScenarios;
 
         const int nowSeconds = getParameter<int>("Current time (seconds)");
-        const int threads = numberOfThreads();
+        const TransferSetConfig transfers = transferSetConfig();
+        const int threads = transfers.threads;
 
         DynamicTimeTable::Data dynamicTimeTable = loadDynamicTimeTable(getParameter("Input binary (DynamicTimeTable Data)"));
         const auto queryData = QueryDataBuilder()(dynamicTimeTable);
@@ -117,7 +118,7 @@ public:
 
         TransferStoreType store;
         TransferUpdater transferUpdater(store);
-        InitialTransferStoreBuilder(TransferSetSelection::Full, threads)(transferUpdater, queryData);
+        InitialTransferStoreBuilder(transfers.selection, threads)(transferUpdater, queryData);
 
         PhaseTimings phases{};
         DynamicTimeTable::Algo::UpdateSimulationStats simStats{};
@@ -125,7 +126,8 @@ public:
             UpdateGenerator(simulationConfig())(dynamicTimeTable, nowSeconds, &simStats, &phases);
 
         std::cout << "Applying updates..." << std::endl;
-        const TimedAppliedUpdate applied = applyIncrementalUpdateTimed(dynamicTimeTable, transferUpdater, updates, threads);
+        const TimedAppliedUpdate applied = applyIncrementalUpdateTimed(
+            dynamicTimeTable, transferUpdater, updates, threads, TransferUpdater::noTimeCutoff, transfers.kinds);
         validateDynamicQueryData(applied.applied.queryData, dynamicTimeTable, "Updated");
         phases += applied.phases;
 
@@ -471,7 +473,9 @@ public:
                     dynamicTimeTable,
                     transferUpdater,
                     updates,
-                    transfers.threads);
+                    transfers.threads,
+                    TransferUpdater::noTimeCutoff,
+                    transfers.kinds);
             stepPhases += applied.phases;
 
             outFile << "Applied update in "
