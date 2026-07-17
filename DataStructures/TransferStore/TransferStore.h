@@ -61,7 +61,7 @@ bool swap_erase_if(Vec& v, Pred p) {
 
 } // namespace transfer_store_detail
 
-template <typename NodeID, typename EdgeMeta, std::size_t StripeCount = 256, bool ThreadSafe = true>
+template <typename NodeID, typename EdgeMeta, std::size_t StripeCount = 2048, bool ThreadSafe = true>
 class TransferStore final : public ITransferStore<NodeID, EdgeMeta> {
 public:
     using Base = ITransferStore<NodeID, EdgeMeta>;
