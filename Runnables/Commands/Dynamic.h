@@ -136,6 +136,11 @@ public:
             printSimulationSummary(simStats, updates, applied.applied.statistics, *applied.applied.changes);
         }
         printPhaseTimings(phases);
+        if constexpr (!DynamicTB::Preprocessing::collectTransferStats) {
+            std::cout << "(build with -DDYN_COLLECT_TRANSFER_STATS for transfer work counters)\n";
+        }
+        printTransferUpdateCounters(applied.counters);
+        printMemoryStats(collectMemoryStats(store, applied.applied.queryData, dynamicTimeTable));
     }
 };
 
@@ -434,9 +439,13 @@ public:
                 std::cerr << "Failed to open timing CSV file: " << timingCsvPath << std::endl;
                 return;
             }
-            writePhaseTimingsCsvHeader(timingCsv);
+            writeCombinedCsvHeader(timingCsv);
         }
         PhaseTimingsAccumulator timingAccumulator;
+        TransferCountersAccumulator counterAccumulator;
+        UpdateMemoryStats initialMemory{};
+        UpdateMemoryStats latestMemory{};
+        bool haveInitialMemory = false;
 
         DynamicTimeTable::Data dynamicTimeTable =
             loadDynamicTimeTable(getParameter("Input binary (DynamicTimeTable Data)"));
@@ -482,9 +491,18 @@ public:
                     << applied.duration.count()
                     << " µs\n";
 
+            const UpdateMemoryStats memory =
+                collectMemoryStats(store, applied.applied.queryData, dynamicTimeTable);
+            if (!haveInitialMemory) {
+                initialMemory = memory;
+                haveInitialMemory = true;
+            }
+            latestMemory = memory;
+
             timingAccumulator.add(stepPhases);
+            counterAccumulator.add(applied.counters);
             if (timingCsv) {
-                writePhaseTimingsCsvRow(stepPhases, stepIndex + 1, timingCsv);
+                writeCombinedCsvRow(stepIndex + 1, stepPhases, applied.counters, memory, timingCsv);
             }
         }
 
@@ -497,5 +515,23 @@ public:
                   << " second steps."
                   << std::endl;
         printPhaseTimingsSummary(timingAccumulator);
+
+        if constexpr (!DynamicTB::Preprocessing::collectTransferStats) {
+            std::cout << "(build with -DDYN_COLLECT_TRANSFER_STATS for transfer work counters)\n";
+        }
+        std::cout << "Summed transfer update counters over " << counterAccumulator.sampleCount() << " step(s)\n";
+        printTransferUpdateCounters(counterAccumulator.sumCounters());
+
+        if (haveInitialMemory) {
+            std::cout << "\n-- Memory at first step --\n";
+            printMemoryStats(initialMemory);
+            std::cout << "\n-- Memory at last step --\n";
+            printMemoryStats(latestMemory);
+            const long long grownLogical = latestMemory.totalLogicalBytes() - initialMemory.totalLogicalBytes();
+            const long long grownCapacity = latestMemory.totalCapacityBytes() - initialMemory.totalCapacityBytes();
+            std::cout << "\nGrowth over timeline: logical " << String::bytesToString(grownLogical) << ", reserved "
+                      << String::bytesToString(grownCapacity) << " (store edges "
+                      << initialMemory.store.outEdges << " -> " << latestMemory.store.outEdges << ")\n";
+        }
     }
 };

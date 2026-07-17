@@ -17,8 +17,10 @@
 #include "../../Algorithms/DynamicTimeTable/UpdateSimulation.h"
 #include "../../DataStructures/DynamicTimeTable/Data.h"
 #include "../../DataStructures/TransferStore/TransferStore.h"
+#include "../../Helpers/MemoryStats.h"
 #include "../../Helpers/PhaseTimings.h"
 #include "../../Helpers/Timer.h"
+#include "../../Helpers/UpdateCounters.h"
 #include "Algorithms/DynamicTB/preprocessing/TransferUpdate.h"
 
 namespace DynamicTransferScenarios {
@@ -60,6 +62,7 @@ struct TimedAppliedUpdate {
     AppliedUpdate applied;
     std::chrono::microseconds duration{};
     PhaseTimings phases{};
+    TransferUpdateCounters counters{};
 };
 
 struct UpdateComparisonResult {
@@ -479,7 +482,57 @@ inline TimedAppliedUpdate applyIncrementalUpdateTimed(DynamicTimeTable::Data& dy
 
         return AppliedUpdate(std::move(queryData), changes, statistics);
     });
-    return {std::move(timed.value), timed.duration, phases};
+    // Combine the transfer-update work counters with query-data-rebuild figures
+    // derived from the resulting active timetable sizes (cheap, always computed).
+    TransferUpdateCounters counters = transferUpdater.statsCounters();
+    const auto& qd = timed.value.queryData;
+    counters.activeRoutes = qd.queryData.routeLabels.size();
+    counters.activeTrips = qd.queryData.routeOfTrip.size();
+    counters.activeEvents = qd.queryData.eventLookup.size();
+    counters.skippedEvents = qd.persistentToFlatEvent.size() - qd.queryData.eventLookup.size();
+    return {std::move(timed.value), timed.duration, phases, counters};
+}
+
+// Snapshot the structure-level memory footprint of the persistent stores. Cheap
+// enough to call between timeline steps; measures logical vs reserved bytes.
+inline UpdateMemoryStats collectMemoryStats(const TransferStoreType& store, const DynamicQueryData& queryData,
+                                            const DynamicTimeTable::Data& data) {
+    UpdateMemoryStats m;
+    m.store = store.memoryStats();
+    m.queryDataLogicalBytes = queryData.byteSize();
+    m.queryDataCapacityBytes = queryData.memoryUsageInBytes();
+    m.timeTableLogicalBytes = data.byteSize();
+    m.timeTableCapacityBytes = data.memoryUsageInBytes();
+    return m;
+}
+
+// Combined per-step CSV: phase timings + work counters + memory footprint.
+inline void writeCombinedCsvHeader(std::ostream& out) {
+    out << "index,updateGeneration_us,timetableUpdate_us,queryDataExport_us,baseTransferUpdate_us,"
+           "minimizationUpdate_us,export_us,total_us,"
+           "cancelledTrips,outCleared,inCleared,discOut,discIn,outDiscovered,outAdded,outRemoved,"
+           "inDiscovered,inAdded,inRemoved,domCleanups,domRemoved,arrivalTrips,arrivalUpstream,tripsMinimized,"
+           "stopsScanned,candEvaluated,candKept,warmReplays,activeRoutes,activeTrips,activeEvents,skippedEvents,"
+           "storeOutEdges,storeInEdges,storeMgmtBytes,storeLogicalBytes,storeCapacityBytes,queryDataBytes,"
+           "timeTableBytes,totalLogicalBytes,totalCapacityBytes\n";
+}
+
+inline void writeCombinedCsvRow(long index, const PhaseTimings& t, const TransferUpdateCounters& c,
+                                const UpdateMemoryStats& m, std::ostream& out) {
+    out << index << ',' << t.updateGeneration.count() << ',' << t.timetableUpdate.count() << ','
+        << t.queryDataExport.count() << ',' << t.baseTransferUpdate.count() << ',' << t.minimizationUpdate.count()
+        << ',' << t.exportPhase.count() << ',' << t.total().count() << ',' << c.cancelledTripsProcessed << ','
+        << c.outgoingEdgesCleared << ',' << c.incomingEdgesCleared << ','
+        << c.discoverOutgoingEvents << ',' << c.discoverIncomingEvents << ',' << c.outgoingEdgesDiscovered << ','
+        << c.outgoingEdgesAdded << ',' << c.outgoingEdgesRemoved << ',' << c.incomingEdgesDiscovered << ','
+        << c.incomingEdgesAdded << ',' << c.incomingEdgesRemoved << ',' << c.dominationCleanups << ','
+        << c.dominationEdgesRemoved << ',' << c.arrivalPropagationTrips << ',' << c.arrivalUpstreamSources << ','
+        << c.tripsMinimized << ',' << c.minStopsScanned << ',' << c.minCandidatesEvaluated << ','
+        << c.minCandidatesKept << ',' << c.minWarmStartReplays << ',' << c.activeRoutes << ',' << c.activeTrips
+        << ',' << c.activeEvents << ',' << c.skippedEvents << ',' << m.store.outEdges << ',' << m.store.inEdges
+        << ',' << m.store.managementBytes() << ',' << m.store.totalLogicalBytes() << ','
+        << m.store.totalReservedBytes() << ',' << m.queryDataLogicalBytes << ',' << m.timeTableLogicalBytes << ','
+        << m.totalLogicalBytes() << ',' << m.totalCapacityBytes() << '\n';
 }
 
 class IncrementalUpdateApplier {

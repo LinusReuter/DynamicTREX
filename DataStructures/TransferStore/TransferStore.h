@@ -12,6 +12,8 @@
 
 #include "ITransferStore.h"
 #include "ExternalLibs/gch_small_vector/small_vector.hpp"
+#include "Helpers/MemoryStats.h"
+#include "Helpers/MultiThreading.h"
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #include <immintrin.h>
@@ -574,6 +576,31 @@ public:
                 " -> ",
                 to);
         }
+    }
+
+    TransferStoreMemory memoryStats() const noexcept {
+        TransferStoreMemory m;
+        m.nodes = out_.size();
+        for (const auto& node : out_) {
+            m.outEdges += node.size();
+            m.outPayloadLogical += static_cast<long long>(node.size()) * static_cast<long long>(sizeof(OutEdge));
+            m.outPayloadReserved += static_cast<long long>(node.capacity()) * static_cast<long long>(sizeof(OutEdge));
+        }
+        for (const auto& node : in_) {
+            m.inEdges += node.size();
+            m.inPayloadLogical += static_cast<long long>(node.size()) * static_cast<long long>(sizeof(NodeID));
+            m.inPayloadReserved += static_cast<long long>(node.capacity()) * static_cast<long long>(sizeof(NodeID));
+        }
+        // Management: one vector control block per node (both directions), the two
+        // top-level node-vector objects, and their unused top-level slack.
+        m.nodeHeaderBytes =
+            static_cast<long long>(out_.size()) * static_cast<long long>(sizeof(OutStorage)) +
+            static_cast<long long>(in_.size()) * static_cast<long long>(sizeof(InStorage)) +
+            static_cast<long long>(sizeof(out_)) + static_cast<long long>(sizeof(in_)) +
+            static_cast<long long>(out_.capacity() - out_.size()) * static_cast<long long>(sizeof(OutStorage)) +
+            static_cast<long long>(in_.capacity() - in_.size()) * static_cast<long long>(sizeof(InStorage));
+        m.lockBytes = static_cast<long long>(sizeof(out_locks_)) + static_cast<long long>(sizeof(in_locks_));
+        return m;
     }
 
     void serialize(const std::string& fileName) const noexcept {

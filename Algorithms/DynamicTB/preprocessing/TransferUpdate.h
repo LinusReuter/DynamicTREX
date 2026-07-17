@@ -18,9 +18,19 @@
 #include "../../../Helpers/PhaseTimings.h"
 #include "../../../Helpers/Timer.h"
 #include "../../../Helpers/Types.h"
+#include "../../../Helpers/UpdateCounters.h"
 #include "../../DynamicTimeTable/BuildQueryData.h"
 
 namespace DynamicTB::Preprocessing {
+
+// Work-quantity counters are compile-time gated to keep the timed hot path
+// uncontaminated. Build the "detail" measurement binary with
+// -DDYN_COLLECT_TRANSFER_STATS to populate counters.
+#ifdef DYN_COLLECT_TRANSFER_STATS
+inline constexpr bool collectTransferStats = true;
+#else
+inline constexpr bool collectTransferStats = false;
+#endif
 
 /**
  * @brief Edge metadata stored in the transfer store.
@@ -155,6 +165,7 @@ public:
         const int threads = std::max(1, numberOfThreads);
         omp_set_num_threads(threads);
         queryData_ = &queryData;
+        if constexpr (collectTransferStats) stats_counters_ = {};
         const std::size_t eventCount = queryData_->persistentToFlatEvent.size();
         if (eventCount == 0) {
             store_.clear();
@@ -179,9 +190,12 @@ public:
             if (omp_get_num_threads() > 1) pinThreadToCoreId(omp_get_thread_num() % numberOfCores());
             std::vector<MinTarget> localTrips;
             std::vector<std::pair<NodeID, TransferMeta>> removedIncoming;
+            TransferUpdateCounters lc;
 #pragma omp for schedule(dynamic, 16)
             for (const auto& cancelledTrip : changes.cancelledTrips) {
+                if constexpr (collectTransferStats) ++lc.cancelledTripsProcessed;
                 for (const auto event : cancelledTrip.eventsOfCancelledTrips) {
+                    if constexpr (collectTransferStats) lc.outgoingEdgesCleared += store_.outgoing_unsorted(event).size();
                     store_.clear_outgoing(event);
                     // Sources lose their outgoing edge into this cancelled event. Only a
                     // source whose edge was MINIMIZED can have its reduction change; a
@@ -189,29 +203,43 @@ public:
                     // removal leaves every other keep-flag untouched.
                     removedIncoming.clear();
                     store_.clear_incoming_with_meta(event, removedIncoming);
+                    if constexpr (collectTransferStats) lc.incomingEdgesCleared += removedIncoming.size();
                     for (const auto& [from, meta] : removedIncoming) {
-                        if (meta.isMinimized) recordSourceTripOfEvent(from, localTrips);
+                        if (meta.isMinimized) {
+                            recordSourceTripOfEvent(from, localTrips);
+                        }
                     }
                 }
             }
 #pragma omp critical
-            globalTripsToMinimize.insert(globalTripsToMinimize.end(), localTrips.begin(), localTrips.end());
+            {
+                globalTripsToMinimize.insert(globalTripsToMinimize.end(), localTrips.begin(), localTrips.end());
+                if constexpr (collectTransferStats) stats_counters_ += lc;
+            }
         }
         store_.sync_barrier();
 
         collectDiscoveryTargets(changes, toDiscoverOutgoing, toDiscoverIncoming);
+        if constexpr (collectTransferStats) {
+            stats_counters_.discoverOutgoingEvents += toDiscoverOutgoing.size();
+            stats_counters_.discoverIncomingEvents += toDiscoverIncoming.size();
+        }
 
         // Phase 2: Parallel Outgoing Discovery
 #pragma omp parallel if (threads > 1)
         {
             if (omp_get_num_threads() > 1) pinThreadToCoreId(omp_get_thread_num() % numberOfCores());
             std::vector<MinTarget> localTrips;
+            TransferUpdateCounters lc;
 #pragma omp for schedule(dynamic, 16)
             for (const auto i : toDiscoverOutgoing) {
-                updateOutgoingForEvent(i, localTrips);
+                updateOutgoingForEvent(i, localTrips, lc);
             }
 #pragma omp critical
-            globalTripsToMinimize.insert(globalTripsToMinimize.end(), localTrips.begin(), localTrips.end());
+            {
+                globalTripsToMinimize.insert(globalTripsToMinimize.end(), localTrips.begin(), localTrips.end());
+                if constexpr (collectTransferStats) stats_counters_ += lc;
+            }
         }
         store_.sync_barrier();
 
@@ -224,21 +252,24 @@ public:
             if (omp_get_num_threads() > 1) pinThreadToCoreId(omp_get_thread_num() % numberOfCores());
             std::vector<MinTarget> localTrips;
             std::vector<PendingDominationCleanup> localCleanups;
+            TransferUpdateCounters lc;
 #pragma omp for schedule(dynamic, 16)
             for (const auto i : toDiscoverIncoming) {
-                updateIncomingForEvent(i, localTrips, localCleanups);
+                updateIncomingForEvent(i, localTrips, localCleanups, lc);
             }
 #pragma omp critical
             {
                 globalTripsToMinimize.insert(globalTripsToMinimize.end(), localTrips.begin(), localTrips.end());
                 globalPendingCleanups.insert(globalPendingCleanups.end(), localCleanups.begin(),
                                              localCleanups.end());
+                if constexpr (collectTransferStats) stats_counters_ += lc;
             }
         }
         store_.sync_barrier();
 
         for (const auto& [fromEvent, flatToEvent] : globalPendingCleanups) {
-            dominationCleanupForInsertedTransfer(fromEvent, flatToEvent, globalTripsToMinimize);
+            if constexpr (collectTransferStats) ++stats_counters_.dominationCleanups;
+            dominationCleanupForInsertedTransfer(fromEvent, flatToEvent, globalTripsToMinimize, stats_counters_);
         }
 
         store_.allowTemporaryInconsistent(false);
@@ -257,10 +288,12 @@ public:
         {
             if (omp_get_num_threads() > 1) pinThreadToCoreId(omp_get_thread_num() % numberOfCores());
             std::vector<MinTarget> localTrips;
+            TransferUpdateCounters lc;
 #pragma omp for schedule(dynamic, 1024)
             for (const auto& [changedTrip, maxChangedIndex] : changes.tripsWithChangedArrivals) {
                 const auto events = queryData_->getEventsOfTrip(changedTrip);
                 if (events.empty()) continue;
+                if constexpr (collectTransferStats) ++lc.arrivalPropagationTrips;
 
                 // (a) SELF: re-minimize the changed trip itself. Its arrivals changed up to
                 // maxChangedIndex, so keep-decisions can differ from there down.
@@ -274,12 +307,16 @@ public:
                     std::min(static_cast<std::size_t>(maxChangedIndex) + 1, events.size());
                 for (std::size_t idx = 0; idx < limit; ++idx) {
                     for (const auto from : store_.incoming_sorted(events[idx])) {
+                        if constexpr (collectTransferStats) ++lc.arrivalUpstreamSources;
                         recordSourceTripOfEvent(from, localTrips);
                     }
                 }
             }
 #pragma omp critical
-            globalTripsToMinimize.insert(globalTripsToMinimize.end(), localTrips.begin(), localTrips.end());
+            {
+                globalTripsToMinimize.insert(globalTripsToMinimize.end(), localTrips.begin(), localTrips.end());
+                if constexpr (collectTransferStats) stats_counters_ += lc;
+            }
         }
 
         aggregateMaxByTrip(globalTripsToMinimize);
@@ -290,7 +327,8 @@ public:
         }
 
         Timer minimizationTimer;
-        updateMinimizedTransfers(globalTripsToMinimize, queryData, numberOfThreads, nowSeconds);
+        if constexpr (collectTransferStats) stats_counters_.tripsMinimized += globalTripsToMinimize.size();
+        updateMinimizedTransfers(globalTripsToMinimize, queryData, numberOfThreads, nowSeconds, &stats_counters_);
         if (outPhases != nullptr) {
             outPhases->minimizationUpdate += std::chrono::microseconds(
                 static_cast<long long>(minimizationTimer.elapsedMicroseconds()));
@@ -340,9 +378,10 @@ public:
      * @brief Incremental minimization re-run for a set of (flat) trips with warm-start boundaries.
      */
     void updateMinimizedTransfers(std::span<const MinTarget> trips, const DynamicQueryData& queryData,
-                                  const int numberOfThreads, const int nowSeconds = noTimeCutoff) {
+                                  const int numberOfThreads, const int nowSeconds = noTimeCutoff,
+                                  TransferUpdateCounters* counters = nullptr) {
         queryData_ = &queryData;
-        runMinimization(trips, numberOfThreads, nowSeconds);
+        runMinimization(trips, numberOfThreads, nowSeconds, counters);
     }
 
     /**
@@ -506,17 +545,19 @@ private:
     /**
      * @brief Core dispatcher for computing and applying outgoing discovery modifications.
      */
-    void updateOutgoingForEvent(PersistentStopEventId event, std::vector<MinTarget>& localTrips) const {
+    void updateOutgoingForEvent(PersistentStopEventId event, std::vector<MinTarget>& localTrips,
+                                TransferUpdateCounters& lc) const {
         StopEventId flatFromEvent = queryData_->persistentToFlatEvent[event];
         if (flatFromEvent == noStopEvent) return;
 
         std::vector<PersistentStopEventId> desired;
         computeOutgoingTransfers(flatFromEvent, desired);
+        if constexpr (collectTransferStats) lc.outgoingEdgesDiscovered += desired.size();
 
         // Only flag this event's trip for re-minimization if its outgoing set actually
         // changed. If nothing changed here, the trip's minimization is unaffected by this
         // phase (destination-arrival changes are handled separately by Phase 4).
-        if (applyOutgoingDiff(event, desired)) {
+        if (applyOutgoingDiff(event, desired, lc)) {
             localTrips.emplace_back(queryData_->tripOfEvent(flatFromEvent), queryData_->stopIndexOfEvent(flatFromEvent));
         }
     }
@@ -525,13 +566,15 @@ private:
      * @brief Core dispatcher for computing and applying incoming discovery modifications.
      */
     void updateIncomingForEvent(PersistentStopEventId event, std::vector<MinTarget>& localTrips,
-                                std::vector<PendingDominationCleanup>& pendingCleanups) const {
+                                std::vector<PendingDominationCleanup>& pendingCleanups,
+                                TransferUpdateCounters& lc) const {
         StopEventId flatToEvent = queryData_->persistentToFlatEvent[event];
         if (flatToEvent == noStopEvent) return;
 
         std::vector<PersistentStopEventId> desired;
         computeIncomingTransfers(flatToEvent, desired);
-        applyIncomingDiff(event, flatToEvent, desired, localTrips, pendingCleanups);
+        if constexpr (collectTransferStats) lc.incomingEdgesDiscovered += desired.size();
+        applyIncomingDiff(event, flatToEvent, desired, localTrips, pendingCleanups, lc);
     }
 
     /**
@@ -719,7 +762,8 @@ private:
      * @brief Computes mutations against current outgoing store entries.
      */
     inline bool applyOutgoingDiff(PersistentStopEventId fromEvent,
-                                  std::span<const PersistentStopEventId> desired) const {
+                                  std::span<const PersistentStopEventId> desired,
+                                  TransferUpdateCounters& lc) const {
         auto batch = store_.begin_batch(fromEvent, Store::Direction::Outgoing);
         // Re-minimization of this source is needed only if a candidate that participated
         // in the reduction changed: any ADD (a new candidate can flip other keep-flags),
@@ -730,10 +774,12 @@ private:
         mergeSortedDiff(
             store_.outgoing_sorted(fromEvent), desired, [](const auto& edge) { return edge.to; },
             [&](const auto& edge) {
+                if constexpr (collectTransferStats) ++lc.outgoingEdgesRemoved;
                 if (edge.meta.isMinimized) needsRemin = true;
                 store_.remove_outgoing_edge(batch, edge.to);
             },
             [&](PersistentStopEventId to) {
+                if constexpr (collectTransferStats) ++lc.outgoingEdgesAdded;
                 store_.add_outgoing_edge(batch, to, TransferMeta{false});
                 needsRemin = true;
             },
@@ -747,7 +793,8 @@ private:
      */
     void applyIncomingDiff(PersistentStopEventId toEvent, StopEventId flatToEvent,
                            std::span<const PersistentStopEventId> desired, std::vector<MinTarget>& localTrips,
-                           std::vector<PendingDominationCleanup>& pendingCleanups) const {
+                           std::vector<PendingDominationCleanup>& pendingCleanups,
+                           TransferUpdateCounters& lc) const {
         auto batch = store_.begin_batch(toEvent, Store::Direction::Incoming);
 
         // New incoming edges whose domination cleanup is deferred.
@@ -757,10 +804,12 @@ private:
         mergeSortedDiff(
             store_.incoming_sorted(toEvent), desired, [](PersistentStopEventId from) { return from; },
             [&](PersistentStopEventId from) {
+                if constexpr (collectTransferStats) ++lc.incomingEdgesRemoved;
                 store_.remove_incoming_edge(batch, from);
                 recordSourceTripOfEvent(from, localTrips);
             },
             [&](PersistentStopEventId from) {
+                if constexpr (collectTransferStats) ++lc.incomingEdgesAdded;
                 recordSourceTripOfEvent(from, localTrips);
                 store_.add_incoming_edge(batch, from, TransferMeta{false});
                 newlyInserted.push_back(from);
@@ -789,7 +838,8 @@ private:
      * outgoing transfer of fromEvent (same route, same stop index, but a later trip), remove it.
      */
     void dominationCleanupForInsertedTransfer(PersistentStopEventId fromEvent, StopEventId flatToEvent,
-                                              std::vector<MinTarget>& localTrips) const {
+                                              std::vector<MinTarget>& localTrips,
+                                              TransferUpdateCounters& lc) const {
         const auto& qd = queryData_->queryData;
         TripId flatToTrip = queryData_->tripOfEvent(flatToEvent);
         RouteId toRoute = qd.routeOfTrip[flatToTrip];
@@ -812,6 +862,7 @@ private:
             if (!isDominated) continue;
 
             store_.remove_edge(fromEvent, u2Event);
+            if constexpr (collectTransferStats) ++lc.dominationEdgesRemoved;
             if (edge.meta.isMinimized) {
                 recordSourceTripOfEvent(fromEvent, localTrips);
             }
@@ -871,7 +922,7 @@ private:
      * Each thread owns its StopLabel scratch buffers to avoid data races.
      */
     void runMinimization(std::span<const MinTarget> trips, const int numberOfThreads,
-                         const int nowSeconds = noTimeCutoff) const {
+                         const int nowSeconds = noTimeCutoff, TransferUpdateCounters* counters = nullptr) const {
         const std::size_t numStops = queryData_->queryData.firstRouteSegmentOfStop.size() - 1;
 
         const int threads = std::max(1, numberOfThreads);
@@ -881,11 +932,16 @@ private:
             if (omp_get_num_threads() > 1) pinThreadToCoreId(omp_get_thread_num() % numberOfCores());
             std::vector localLabels(numStops, StopLabel());
             std::vector<TransferCandidate> localCandidates;
+            TransferUpdateCounters localCtr;
             int localTimestamp = 0;
 #pragma omp for schedule(dynamic, 1)
             for (const auto& [trip, startIndex] : trips) {
                 reduceTransfersForTrip(trip, static_cast<int>(startIndex), localLabels, localCandidates,
-                                       localTimestamp, nowSeconds);
+                                       localTimestamp, nowSeconds, localCtr);
+            }
+#pragma omp critical
+            if constexpr (collectTransferStats) {
+                if (counters != nullptr) *counters += localCtr;
             }
         }
     }
@@ -956,7 +1012,7 @@ private:
      */
     void reduceTransfersForTrip(TripId flatTrip, const int startIndex, std::vector<StopLabel>& localLabels,
                                 std::vector<TransferCandidate>& candidates, int& localTimestamp,
-                                [[maybe_unused]] const int nowSeconds = noTimeCutoff) const {
+                                [[maybe_unused]] const int nowSeconds, TransferUpdateCounters& lc) const {
         const auto& qd = queryData_->queryData;
         localTimestamp++;
 
@@ -964,6 +1020,7 @@ private:
 
         // Scan backward from the destination stop down to the second stop (index 1)
         for (int i = numStops - 1; i > 0; --i) {
+            if constexpr (collectTransferStats) ++lc.minStopsScanned;
             StopEventId flatFromEvent = StopEventId(qd.firstStopEventOfTrip[flatTrip] + i);
             PersistentStopEventId pFromEvent = queryData_->flatToPersistentEvent[flatFromEvent];
             assert(pFromEvent != noPersistentStopEventId);
@@ -990,6 +1047,7 @@ private:
                     if (!edge.meta.isMinimized) continue;
                     StopEventId flatTo = queryData_->persistentToFlatEvent[edge.to];
                     if (flatTo == noStopEvent) continue;
+                    if constexpr (collectTransferStats) ++lc.minWarmStartReplays;
                     foldCandidateDomination({&edge, flatTo, static_cast<int>(queryData_->arrivalTimeOfEvent(flatTo))},
                                             localTimestamp, localLabels);
                 }
@@ -1004,6 +1062,7 @@ private:
                     candidates.push_back({&edge, flatTo, static_cast<int>(queryData_->arrivalTimeOfEvent(flatTo))});
                 }
             }
+            if constexpr (collectTransferStats) lc.minCandidatesEvaluated += candidates.size();
 
             // 3. Sort candidates by destination arrival time.
             std::ranges::sort(candidates, [](const TransferCandidate& a, const TransferCandidate& b) {
@@ -1014,6 +1073,9 @@ private:
             // 4. Domination profile filtering
             for (const auto& candidate : candidates) {
                 candidate.edge->meta.isMinimized = foldCandidateDomination(candidate, localTimestamp, localLabels);
+                if constexpr (collectTransferStats) {
+                    if (candidate.edge->meta.isMinimized) ++lc.minCandidatesKept;
+                }
             }
         }
     }
@@ -1022,9 +1084,16 @@ public:
     // Public: accessed directly by the transfer scenario helpers for store diagnostics.
     Store& store_;
 
+    // Work counters from the most recent applyFullUpdates() call. Only
+    // populated in detail builds (collectTransferStats); all-zero otherwise.
+    const TransferUpdateCounters& statsCounters() const noexcept { return stats_counters_; }
+
 private:
     // Snapshot of the current active timetable; refreshed at the start of every entry point.
     const DynamicQueryData* queryData_{nullptr};
+
+    // Accumulated across the phases of the current applyFullUpdates() call.
+    mutable TransferUpdateCounters stats_counters_{};
 };
 
 }  // namespace DynamicTB::Preprocessing

@@ -145,6 +145,14 @@ ifdef DYN_TRANSFER_TIME_CUTOFF
 	PREFETCH += -DDYN_TRANSFER_TIME_CUTOFF
 endif
 
+# Optional: enable compile-gated transfer-update work counters (see
+# TransferUpdate.h collectTransferStats). Adds detailed per-update counters to
+# simulateDynamicUpdates / simulateTransferTimeline at some measurement overhead;
+# leave off for clean timing runs. Usage: make DynamicRelease DYN_COLLECT_TRANSFER_STATS=1
+ifdef DYN_COLLECT_TRANSFER_STATS
+	PREFETCH += -DDYN_COLLECT_TRANSFER_STATS
+endif
+
 # Libraries: default assumes GCC; clang debug builds on macOS usually don't have libatomic
 LIBS_DEFAULT = -ltbb -latomic
 LIBS_DEBUG = $(LIBS_DEFAULT)
@@ -196,6 +204,12 @@ DynamicDebug:
 DynamicRelease:
 	$(CC) $(FLAGS) $(OPTIMIZATION) $(RELEASE) \
 	      -o Dynamic Dynamic.cpp -ltbb -latomic $(PREFETCH) -g
+
+# Detail measurement build: release + transfer work counters, emitted as a
+# separate binary so the plain `Dynamic` stays counter-free for clean timing.
+DynamicStats:
+	$(CC) $(FLAGS) $(OPTIMIZATION) $(RELEASE) \
+	      -o DynamicStats Dynamic.cpp -ltbb -latomic $(PREFETCH) -DDYN_COLLECT_TRANSFER_STATS -g
 
 # -----------------------------
 # TREX PGO

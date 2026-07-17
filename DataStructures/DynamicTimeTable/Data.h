@@ -10,6 +10,7 @@
 #include "../../Algorithms/UnionFind.h"
 #include "../../Helpers/IO/Serialization.h"
 #include "../../Helpers/Types.h"
+#include "../../Helpers/Vector/Vector.h"
 #include "../RAPTOR/Data.h"
 #include "Entities/PersistentRoute.h"
 #include "Entities/PersistentStopEvent.h"
@@ -156,6 +157,30 @@ public:
     const TransferGraph& transferGraph() const noexcept { return transferGraph_; }
 
     const std::vector<int>& minTransferTimes() const noexcept { return minTransferTimes_; }
+
+    // --- Memory footprint (structure byteSize) ---
+    // Long-term persistent workspace: routes (each with inner stopSequence/trips
+    // vectors), trips, events, the event->trip map, min transfer times, cell ids
+    // and the static transfer graph. The sequence-hash index is approximated.
+    // `capacity` selects size() (logical) vs capacity() (reserved) accounting.
+    long long dataBytes(bool capacity) const noexcept {
+        auto v = [&](const auto& vec) {
+            return capacity ? Vector::memoryUsageInBytes(vec) : Vector::byteSize(vec);
+        };
+        long long r = static_cast<long long>(sizeof(PersistentRoute)) *
+                      (capacity ? static_cast<long long>(routes_.capacity()) : static_cast<long long>(routes_.size()));
+        for (const auto& route : routes_) r += v(route.stopSequence) + v(route.trips);
+        r += v(trips_) + v(events_) + v(eventToTrip_) + v(minTransferTimes_) + v(cellIds_);
+        r += capacity ? transferGraph_.memoryUsageInBytes() : transferGraph_.byteSize();
+        // Approximate the sequence-hash multimap (bucket entries + payload vectors).
+        for (const auto& [key, bucket] : routesBySequenceHash_) {
+            r += static_cast<long long>(sizeof(std::size_t) + sizeof(void*) * 2) + v(bucket);
+        }
+        return r;
+    }
+
+    long long byteSize() const noexcept { return dataBytes(false); }
+    long long memoryUsageInBytes() const noexcept { return dataBytes(true); }
 
     int minTransferTime(const StopId stop) const noexcept { return minTransferTimes_[stop]; }
 

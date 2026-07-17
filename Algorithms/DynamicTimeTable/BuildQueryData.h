@@ -8,6 +8,7 @@
 #include "../../DataStructures/DynamicTimeTable/Data.h"
 #include "../../Helpers/MultiThreading.h"
 #include "../../Helpers/Types.h"
+#include "../../Helpers/Vector/Vector.h"
 #include "../TripBased/Query/Types.h"
 
 namespace DynamicTimeTable {
@@ -25,6 +26,52 @@ struct DynamicQueryData {
     std::vector<RouteId> persistentToFlatRoute;
     std::vector<TripId> persistentToFlatTrip;
     std::vector<StopEventId> persistentToFlatEvent;
+
+    // --- Memory footprint (structure byteSize) ---
+    // Sums the six persistent<->flat translation tables plus the nested
+    // TripBased::QueryData (CSR arrays, both transfer graphs, and the per-route
+    // departure-time labels). `logical` uses size(), `capacity` uses capacity().
+    long long queryDataInternalBytes(bool capacity) const noexcept {
+        const auto& qd = queryData;
+        long long r = 0;
+        auto add = [&](const auto& vec) {
+            r += capacity ? Vector::memoryUsageInBytes(vec) : Vector::byteSize(vec);
+        };
+        add(qd.eventLookup);
+        add(qd.eventArrTimes);
+        add(qd.eventDepTimes);
+        add(qd.tripOfStopEvent);
+        add(qd.routeOfTrip);
+        add(qd.firstStopEventOfTrip);
+        add(qd.firstTripOfRoute);
+        add(qd.firstRouteSegmentOfStop);
+        add(qd.routeSegments);
+        add(qd.firstStopIdOfRoute);
+        add(qd.routeStopSequences);
+        // Per-route labels carry an inner departureTimes vector each.
+        r += static_cast<long long>(sizeof(TripBased::RouteLabel)) * static_cast<long long>(qd.routeLabels.size());
+        for (const auto& label : qd.routeLabels) add(label.departureTimes);
+        r += capacity ? qd.transferGraph.memoryUsageInBytes() : qd.transferGraph.byteSize();
+        r += capacity ? qd.reverseTransferGraph.memoryUsageInBytes() : qd.reverseTransferGraph.byteSize();
+        return r;
+    }
+
+    long long byteSize() const noexcept {
+        long long r = Vector::byteSize(flatToPersistentRoute) + Vector::byteSize(flatToPersistentTrip) +
+                      Vector::byteSize(flatToPersistentEvent) + Vector::byteSize(persistentToFlatRoute) +
+                      Vector::byteSize(persistentToFlatTrip) + Vector::byteSize(persistentToFlatEvent);
+        return r + queryDataInternalBytes(false);
+    }
+
+    long long memoryUsageInBytes() const noexcept {
+        long long r = Vector::memoryUsageInBytes(flatToPersistentRoute) +
+                      Vector::memoryUsageInBytes(flatToPersistentTrip) +
+                      Vector::memoryUsageInBytes(flatToPersistentEvent) +
+                      Vector::memoryUsageInBytes(persistentToFlatRoute) +
+                      Vector::memoryUsageInBytes(persistentToFlatTrip) +
+                      Vector::memoryUsageInBytes(persistentToFlatEvent);
+        return r + queryDataInternalBytes(true);
+    }
 
     // --- Query helpers (flat IDs) ---
     inline size_t numberOfStopsInTrip(const TripId trip) const noexcept {
