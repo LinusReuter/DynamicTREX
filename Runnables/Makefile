@@ -1,6 +1,6 @@
 # Makefile with ARM detection and SIMD/compiler mapping
 # Keeps original x86 configuration as default. On ARM (aarch64 / arm64)
-# switches to g++-15 and maps SIMD/compiler flags to ARM-friendly ones.
+# switches to g++-16 and maps SIMD/compiler flags to ARM-friendly ones.
 
 # Detect architecture
 ARCH := $(shell uname -m)
@@ -13,12 +13,12 @@ IS_ARM := $(filter aarch64 arm64 armv7l armv8l,$(ARCH))
 CC_DEFAULT = g++ -fopenmp
 SIMD_X86 = -mavx2 -mno-avx256-split-unaligned-load -mno-avx256-split-unaligned-store
 
-# ARM compiler and SIMD flags (use g++-15 on ARM as requested)
+# ARM compiler and SIMD flags (use g++-16 on ARM as requested)
 # -march=armv8.2-a is a reasonable target for recent ARM CPUs; +simd requests the
 # architecture SIMD extension where supported. mfpu=neon is widely-supported on ARM.
 # If you're targeting older 32-bit ARM, you may need to adjust flags (this Makefile
 # assumes 64-bit aarch64/arm64 by default).
-CC_ARM = g++-15 -fopenmp
+CC_ARM = g++-16 -fopenmp
 SIMD_ARM =
 
 # Pick compiler and SIMD flags based on detected arch
