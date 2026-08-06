@@ -2,4 +2,11 @@ Runnables/TREX
 Runnables/TP
 Runnables/Network
 Runnables/readcache
+Runnables/Dynamic
+Runnables/DynamicStats
+
 Datasets/
+.cache/
+realtime/
+
+.idea/
