@@ -10,6 +10,8 @@
 #include <iostream>
 #include <utility>
 
+#include <omp.h>
+
 #include "ITransferStore.h"
 #include "ExternalLibs/gch_small_vector/small_vector.hpp"
 #include "Helpers/MemoryStats.h"
@@ -206,23 +208,52 @@ private:
     // Build incoming from outgoing (sorted by from).
     void rebuild_incoming_from_outgoing() {
         const std::size_t n = out_.size();
-        std::vector<std::size_t> in_deg(n, 0);
+        std::vector<std::atomic<std::size_t>> in_deg(n);
+        for (std::size_t i = 0; i < n; ++i) in_deg[i].store(0, std::memory_order_relaxed);
 
-        for (NodeID from = NodeID(0); from < static_cast<NodeID>(n); ++from) {
-            for (const auto& e : out_[from]) {
-                ++in_deg[static_cast<std::size_t>(e.to)];
+#pragma omp parallel
+        {
+            if (omp_get_num_threads() > 1) pinThreadToCoreId(omp_get_thread_num() % numberOfCores());
+
+            // Thread-local degree counts avoid atomic contention on hot nodes.
+            std::vector<std::size_t> local_deg(n, 0);
+#pragma omp for schedule(static)
+            for (std::size_t from = 0; from < n; ++from) {
+                for (const auto& e : out_[from]) {
+                    ++local_deg[static_cast<std::size_t>(e.to)];
+                }
+            }
+            for (std::size_t i = 0; i < n; ++i) {
+                if (local_deg[i] != 0) in_deg[i].fetch_add(local_deg[i], std::memory_order_relaxed);
             }
         }
 
         std::vector<InStorage> tmp(n);
+        std::vector<std::atomic<std::size_t>> write_pos(n);
+#pragma omp parallel for schedule(static)
         for (std::size_t i = 0; i < n; ++i) {
-            tmp[i].reserve(in_deg[i]);
+            tmp[i].resize(in_deg[i].load(std::memory_order_relaxed));
+            write_pos[i].store(0, std::memory_order_relaxed);
         }
 
-        for (NodeID from = NodeID(0); from < static_cast<NodeID>(n); ++from) {
-            for (const auto& e : out_[from]) {
-                tmp[static_cast<std::size_t>(e.to)].push_back(from);
+#pragma omp parallel
+        {
+            if (omp_get_num_threads() > 1) pinThreadToCoreId(omp_get_thread_num() % numberOfCores());
+#pragma omp for schedule(static)
+            for (std::size_t from = 0; from < n; ++from) {
+                const NodeID fromNode = static_cast<NodeID>(from);
+                for (const auto& e : out_[from]) {
+                    const std::size_t to = static_cast<std::size_t>(e.to);
+                    const std::size_t idx = write_pos[to].fetch_add(1, std::memory_order_relaxed);
+                    tmp[to][idx] = fromNode;
+                }
             }
+        }
+
+        // Parallel fill above does not preserve from-order; restore it per bucket.
+#pragma omp parallel for schedule(dynamic, 1024)
+        for (std::size_t i = 0; i < n; ++i) {
+            std::sort(tmp[i].begin(), tmp[i].end());
         }
 
         in_ = std::move(tmp);
