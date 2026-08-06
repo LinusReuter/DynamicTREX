@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -102,16 +104,26 @@ struct DynamicQueryData {
         return Time(queryData.eventDepTimes[event]);
     }
 
-    inline std::vector<PersistentStopEventId> getEventsOfTrip(const PersistentTripId pTrip) const noexcept {
-        TripId trip = persistentToFlatTrip[pTrip];
-        std::vector<PersistentStopEventId> pEvents;
-        if (trip == noTripId) return pEvents;
-        StopEventId first = queryData.firstStopEventOfTrip[trip];
-        StopEventId limit = queryData.firstStopEventOfTrip[trip + 1];
-        pEvents.reserve(limit - first);
+    // Append a trip's stop events, in stop-index order, to a caller-owned buffer. Prefer this
+    // over getEventsOfTrip() on any per-trip path: the update stage calls it once per changed,
+    // cancelled and added trip, where returning a fresh vector is a malloc/free per trip.
+    inline void appendEventsOfTrip(const PersistentTripId pTrip,
+                                   std::vector<PersistentStopEventId>& out) const noexcept {
+        const TripId trip = persistentToFlatTrip[pTrip];
+        if (trip == noTripId) return;
+        const StopEventId first = queryData.firstStopEventOfTrip[trip];
+        const StopEventId limit = queryData.firstStopEventOfTrip[trip + 1];
+        // Grow geometrically: an exact reserve(size + n) per call would realloc on every trip.
+        const std::size_t needed = out.size() + static_cast<std::size_t>(limit - first);
+        if (needed > out.capacity()) out.reserve(std::max(needed, out.capacity() * 2));
         for (StopEventId event = first; event < limit; ++event) {
-            pEvents.emplace_back(flatToPersistentEvent[event]);
+            out.emplace_back(flatToPersistentEvent[event]);
         }
+    }
+
+    inline std::vector<PersistentStopEventId> getEventsOfTrip(const PersistentTripId pTrip) const noexcept {
+        std::vector<PersistentStopEventId> pEvents;
+        appendEventsOfTrip(pTrip, pEvents);
         return pEvents;
     }
 

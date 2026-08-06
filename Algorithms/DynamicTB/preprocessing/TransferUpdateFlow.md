@@ -1,84 +1,76 @@
-# TransferUpdate – Data Flow
+# TransferUpdate – Components & Data Flow
 
-+--------------------------------------------------+
-| buildInitialFullTransfers(queryData)             |
-+--------------------------------------------------+
-| 1) store.add_nodes(maxEventId)                   |
-| 2) clear store                                   |
-| 3) allowTemporaryInconsistent(true)              |
-| 4) discover all outgoing transfers               |
-|    (loop events -> updateOutgoingForEvent)       |
-| 5) rebuild incoming / sync_barrier()             |
-+--------------------------------------------------+
+## Components
 
-+--------------------------------------------------+
-| applyFullUpdates -> ret {MinimizationCandidates} |
-+--------------------------------------------------+
-| 0) store.add_nodes(maxEventId)                   |
-|                                                  |
-| Phase 0/1: processCancelledTrips                 |
-|  - allowTemporaryInconsistent(true)              |
-|  - if nextActiveTrip exists: redirect incoming   |
-|  - clearTripTransfers(trip) (outgoing+incoming)  |
-|  - sync_barrier()                                |
-|                                                  |
-| Phase 2: Outgoing discovery                      |
-|  - allowTemporaryInconsistent(true)              |
-|  - added trips: loop events ->                   |
-|      updateOutgoingForEvent                      |
-|  - modified events: loop events ->               |
-|      updateOutgoingForEvent                      |
-|    (applies diffs via outgoing batches)          |
-|  - diff preserves metadata for existing edges    |
-|    (new edges get isMinimized=false)             |
-|  - sync_barrier()                                |
-|                                                  |
-| Phase 3: Incoming discovery                      |
-|  - allowTemporaryInconsistent(true)              |
-|  - targets: added trips + modified events        |
-|    (NOTE: `tripsWithDelayedArrivals` is for      |
-|     minimization only and does not trigger this) |
-|  - loop target events -> updateIncomingForEvent  |
-|     * compute desired sources:                   |
-|        - connected source stops (footpaths)      |
-|        - routes containing each source stop      |
-|        - earliest feasible source events         |
-|     * diff vs store.incoming(target)             |
-|     * apply via incoming batch ops               |
-|       (new edges get isMinimized=false)          |
-|     * on insert: domination cleanup on target    |
-|       route (remove later dominated targets)     |
-|  - sync_barrier()                                |
-|                                                  |
-| Domination cleanup (incoming-only)               |
-|  - triggered INSIDE updateIncomingForEvent       |
-|  - if a removed edge was isMinimized=true,       |
-|    mark source trip for re-minimization          |
-|                                                  |
-| During all phases, the implementation collects a |
-| set of trips that require re-minimization based  |
-| on the following rules:                          |
-|                                                  |
-| - Source trip of any transfer that is added or   |
-|   removed during a diff/apply step.              |
-| - Source trip of any incoming transfer that is   |
-|   redirected during trip cancellation.           |
-| - Source trip of any transfer removed by         |
-|   domination cleanup if it had `isMinimized=true`|
-| - Source trip of any transfer pointing to a trip |
-|   in the `tripsWithDelayedArrivals` list.        |
-+--------------------------------------------------+
+| Header | Responsibility |
+|---|---|
+| `TransferTypes.h` | `TransferMeta` (`isMinimized`, `rank`), `StopLabel`, `MinTarget`, `PendingDominationCleanup`, `RankRaise`, `sortUnique`, the `collectTransferStats` gate |
+| `AffectedEventSink.h` | `NullAffectedSink` / `AffectedEventCollector` / `AffectedEvents` — the TREX level-0 affected-event delta |
+| `TransferDiscovery.h` | Pure timetable queries: which transfers exist. Never touches the store. Owns `DiscoveryWorkspace` (per-thread scratch) |
+| `TransferStoreMutator.h` | The only store-mutating layer: sorted diffs, batch apply, domination cleanup |
+| `TransferMinimizer.h` | The reduced-set kernel: `reduceTransfersForTrip` + parallel driver. Owns `MinimizationWorkspace` |
+| `TransferExport.h` | Persistent store → flat CSR (`TripBased::Transfers`), carrying `rank`; sparse `applyRankRaises` write-back |
+| `TransferUpdate.h` | The phase driver that composes the above |
 
-+--------------------------------------------------+
-| buildInitialMinimizedTransfers(queryData)        |
-+--------------------------------------------------+
-| loop trips: clearMinimizationFlags +             |
-|              recomputeMinimizedForTrip           |
-+--------------------------------------------------+
+`TransferUpdate<Store, AffectedSink>` is templated on the **concrete** store (so per-edge
+calls inline rather than dispatching through `ITransferStore`) and on the affected-set sink
+(so with `NullAffectedSink` the whole TREX delta collection compiles away).
 
-+--------------------------------------------------+
-| updateMinimizedTransfers(trips, queryData)       |
-+--------------------------------------------------+
-| loop trips: clearMinimizationFlags +             |
-|              recomputeMinimizedForTrip           |
-+--------------------------------------------------+
+## buildInitialFullTransfers(queryData)
+
+```
+1) store.clear()
+2) store.begin_outgoing_init(maxEventId)
+3) parallel over persistent events:
+     TransferDiscovery::computeOutgoingTransfers -> store.add_outgoing_edges_init
+4) store.finish_outgoing_init()   // rebuilds incoming in bulk
+```
+
+## applyFullUpdates(changes, queryData) → re-minimization targets → minimization
+
+```
+0) store.add_nodes(maxEventId); allowTemporaryInconsistent(true)
+
+Phase 1: Cancellations                                      [parallel, then sync_barrier]
+  - clear_outgoing(event)
+  - clear_incoming_with_meta(event) -> per removed edge with isMinimized:
+        flag source trip for re-minimization
+        AffectedSink::markEvent(source)          <- reduced set shrank at the source
+
+collectDiscoveryTargets(changes) -> outgoing / incoming worklists
+
+Phase 2: Outgoing discovery                                 [parallel, then sync_barrier]
+  - computeOutgoingTransfers -> applyOutgoingDiff (mergeSortedDiff vs. stored outgoing)
+  - flag the trip iff an edge was added, or a MINIMIZED edge removed
+  - removed minimized edge -> AffectedSink::markEdgeChanged(from, to)
+  - new edges enter with TransferMeta{} (not minimized, rank 0)
+
+Phase 3: Incoming discovery                                 [parallel, then sync_barrier]
+  - computeIncomingTransfers -> applyIncomingDiff
+  - every add/remove flags the source trip
+  - removals mark the affected set unconditionally: incoming storage carries no metadata,
+    so we cannot tell whether the mirrored outgoing edge was minimized. Over-approximating
+    is safe; missing an entry would leave a rank too low.
+  - inserts record a deferred PendingDominationCleanup
+
+Domination cleanup                                          [sequential]
+  - removes an outgoing edge dominated by a newly inserted one
+  - if it was minimized: flag the source trip + mark the affected set
+
+Phase 4: Changed arrivals                                   [parallel]
+  (a) SELF     : re-minimize the changed trip from maxChangedIndex down
+  (b) UPSTREAM : re-minimize sources feeding stops at index <= maxChangedIndex
+
+aggregateMaxByTrip(targets)      // one entry per trip, max warm-start boundary
+updateMinimizedTransfers(targets)
+```
+
+## Minimization (`TransferMinimizer::reduceTransfersForTrip`)
+
+Scans a trip's stops high→low carrying a per-stop min-arrival profile.
+Stops above the warm-start boundary only **replay** already-kept edges (no decisions, so no
+affected-set entries). At and below it, candidates are sorted by destination arrival and
+folded; every `isMinimized` **flip** is reported to the sink, and an edge leaving the
+reduced set has its `rank` reset to 0.
+
+

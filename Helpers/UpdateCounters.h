@@ -47,6 +47,13 @@ struct TransferUpdateCounters {
     std::uint64_t minCandidatesEvaluated = 0;
     std::uint64_t minCandidatesKept = 0;
     std::uint64_t minWarmStartReplays = 0;
+    // Edges whose isMinimized flag flipped this update; the seed of the TREX level-0
+    // affected set (see AffectedEventSink.h).
+    std::uint64_t minimizationFlips = 0;
+
+    // --- TREX customization ---
+    // Distinct stop events in the merged level-0 affected set.
+    std::uint64_t affectedEventsLevel0 = 0;
 
     // --- Query-data rebuild (derived from result sizes) ---
     std::uint64_t activeRoutes = 0;
@@ -75,6 +82,8 @@ struct TransferUpdateCounters {
         minCandidatesEvaluated += o.minCandidatesEvaluated;
         minCandidatesKept += o.minCandidatesKept;
         minWarmStartReplays += o.minWarmStartReplays;
+        minimizationFlips += o.minimizationFlips;
+        affectedEventsLevel0 += o.affectedEventsLevel0;
         activeRoutes += o.activeRoutes;
         activeTrips += o.activeTrips;
         activeEvents += o.activeEvents;
@@ -128,6 +137,9 @@ inline void printTransferUpdateCounters(const TransferUpdateCounters& c, std::os
     row("candidates evaluated", c.minCandidatesEvaluated);
     row("candidates kept", c.minCandidatesKept);
     row("warm-start replays", c.minWarmStartReplays);
+    row("isMinimized flips", c.minimizationFlips);
+    out << " TREX customization:\n";
+    row("level-0 affected events", c.affectedEventsLevel0);
     out << " Query data:\n";
     row("active routes", c.activeRoutes);
     row("active trips", c.activeTrips);

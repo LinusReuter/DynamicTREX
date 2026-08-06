@@ -28,7 +28,9 @@ namespace DynamicTransferScenarios {
 using DynamicQueryData = DynamicTimeTable::Algo::DynamicQueryData;
 using TransferMeta = DynamicTB::Preprocessing::TransferMeta;
 using TransferStoreType = TransferStore<PersistentStopEventId, TransferMeta>;
-using TransferUpdater = DynamicTB::Preprocessing::TransferUpdate;
+// Concrete store type (not the ITransferStore base) so the per-edge store calls on the
+// update hot path inline instead of dispatching virtually.
+using TransferUpdater = DynamicTB::Preprocessing::TransferUpdate<TransferStoreType>;
 
 enum class TransferSetKind { Full, Reduced };
 
@@ -512,7 +514,8 @@ inline void writeCombinedCsvHeader(std::ostream& out) {
            "minimizationUpdate_us,export_us,total_us,"
            "cancelledTrips,outCleared,inCleared,discOut,discIn,outDiscovered,outAdded,outRemoved,"
            "inDiscovered,inAdded,inRemoved,domCleanups,domRemoved,arrivalTrips,arrivalUpstream,tripsMinimized,"
-           "stopsScanned,candEvaluated,candKept,warmReplays,activeRoutes,activeTrips,activeEvents,skippedEvents,"
+           "stopsScanned,candEvaluated,candKept,warmReplays,minFlips,affectedEventsL0,"
+           "activeRoutes,activeTrips,activeEvents,skippedEvents,"
            "storeOutEdges,storeInEdges,storeMgmtBytes,storeLogicalBytes,storeCapacityBytes,queryDataBytes,"
            "timeTableBytes,totalLogicalBytes,totalCapacityBytes\n";
 }
@@ -528,7 +531,8 @@ inline void writeCombinedCsvRow(long index, const PhaseTimings& t, const Transfe
         << c.incomingEdgesAdded << ',' << c.incomingEdgesRemoved << ',' << c.dominationCleanups << ','
         << c.dominationEdgesRemoved << ',' << c.arrivalPropagationTrips << ',' << c.arrivalUpstreamSources << ','
         << c.tripsMinimized << ',' << c.minStopsScanned << ',' << c.minCandidatesEvaluated << ','
-        << c.minCandidatesKept << ',' << c.minWarmStartReplays << ',' << c.activeRoutes << ',' << c.activeTrips
+        << c.minCandidatesKept << ',' << c.minWarmStartReplays << ',' << c.minimizationFlips << ','
+        << c.affectedEventsLevel0 << ',' << c.activeRoutes << ',' << c.activeTrips
         << ',' << c.activeEvents << ',' << c.skippedEvents << ',' << m.store.outEdges << ',' << m.store.inEdges
         << ',' << m.store.managementBytes() << ',' << m.store.totalLogicalBytes() << ','
         << m.store.totalReservedBytes() << ',' << m.queryDataLogicalBytes << ',' << m.timeTableLogicalBytes << ','
