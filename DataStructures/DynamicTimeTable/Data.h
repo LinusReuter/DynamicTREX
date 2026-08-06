@@ -1,7 +1,10 @@
 #pragma once
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
+#include <fstream>
+#include <iostream>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -221,13 +224,115 @@ public:
         return PersistentStopEventId(first + idx);
     }
 
-    // --- Partitioning/Layout placeholders (kept for compatibility) ---
+    // --- Partitioning / cell hierarchy ---
+    //
+    // The partition is what makes TREX possible: `cellIds_[stop]` is a 16-bit hierarchical
+    // cell id whose bit prefixes encode the nesting, so "same cell at level L" is
+    // `!((a ^ b) >> L)`. RT updates never add stops or repartition, so all of this is
+    // computed once and then held invariant across every timetable update.
+    //
+    // These mirror TREXData::createCompactLayoutGraph / readPartitionFile / applyGlobalIDs
+    // (DataStructures/TREX/TREXData.h) so a partition file produced for the static TREX
+    // instance of the same network can be applied here unchanged. Only the union-find
+    // contraction is ported: the layout graph exists solely to *emit* a METIS/KaHyPar
+    // instance, which stays a static-side responsibility.
 
-    void createCompactLayoutGraph() {}
+    uint16_t getCellIdOfStop(const StopId stop) const noexcept {
+        AssertMsg(static_cast<std::size_t>(stop) < cellIds_.size(), "Stop is out of bounds!");
+        return cellIds_[stop];
+    }
 
-    void applyGlobalIDs([[maybe_unused]] const std::vector<uint64_t>& globalIds) noexcept {}
+    const std::vector<uint16_t>& cellIds() const noexcept { return cellIds_; }
 
-    void readPartitionFile([[maybe_unused]] const std::string& fileName) {}
+    bool hasPartition() const noexcept { return numberOfLevels_ > 0 && !cellIds_.empty(); }
+
+    int getNumberOfLevels() const noexcept { return numberOfLevels_; }
+
+    void setNumberOfLevels(const int levels) noexcept { numberOfLevels_ = levels; }
+
+    /**
+     * Recover the level count from the cell ids themselves. Cell ids are hierarchical bit
+     * prefixes with two cells per level, so the number of levels is the bit width of the
+     * largest id. Keeping this derivable means the partition needs no extra serialized
+     * field and existing dynamic.binary files stay loadable.
+     */
+    void deriveNumberOfLevels() noexcept {
+        uint16_t maxCellId = 0;
+        for (const uint16_t cellId : cellIds_) maxCellId = std::max(maxCellId, cellId);
+        numberOfLevels_ = static_cast<int>(std::bit_width(maxCellId));
+    }
+
+    /**
+     * Contract every footpath-connected component into one union-find representative, so a
+     * cut can never separate two stops joined by a footpath. `componentWeight_[rep]` is the
+     * component size (0 for non-representatives), used to sanity-check applyGlobalIDs.
+     */
+    void createCompactLayoutGraph() {
+        unionFind_.reset(static_cast<int>(numberOfStops_));
+
+        for (const auto [edge, from] : transferGraph_.edgesWithFromVertex()) {
+            const Vertex toStop = transferGraph_.get(ToVertex, edge);
+            unionFind_(from, toStop);
+        }
+
+        componentWeight_.assign(numberOfStops_, 0);
+        for (std::size_t i = 0; i < numberOfStops_; ++i) {
+            ++componentWeight_[static_cast<std::size_t>(unionFind_(static_cast<int>(i)))];
+        }
+    }
+
+    /**
+     * @param globalIds cell id per union-find representative, as emitted by the partitioner.
+     */
+    void applyGlobalIDs(const std::vector<uint64_t>& globalIds) {
+        if (componentWeight_.size() != numberOfStops_) createCompactLayoutGraph();
+        cellIds_.assign(numberOfStops_, 0);
+
+        for (std::size_t i = 0; i < numberOfStops_; ++i) {
+            const int representative = unionFind_(static_cast<int>(i));
+            AssertMsg(static_cast<std::size_t>(representative) < globalIds.size(), "unionFind is out of bounds!");
+            AssertMsg(componentWeight_[static_cast<std::size_t>(representative)] > 0,
+                      "The corresponding component weight is zero?");
+            cellIds_[i] = static_cast<uint16_t>(globalIds[static_cast<std::size_t>(representative)]);
+        }
+
+        AssertMsg(assertNoCutTransfers(), "Footpath has been cut!");
+        deriveNumberOfLevels();
+    }
+
+    void readPartitionFile(const std::string& fileName) {
+        std::vector<uint64_t> globalIds(numberOfStops_, 0);
+        std::fstream file(fileName);
+
+        if (!file.is_open()) {
+            std::cerr << "Unable to open the file: " << fileName << std::endl;
+            return;
+        }
+
+        uint64_t globalId(0);
+        std::size_t index(0);
+        while (file >> globalId) {
+            if (index >= globalIds.size()) break;
+            globalIds[index] = globalId;
+            ++index;
+        }
+        file.close();
+        std::cout << "Read " << index << " many IDs!" << std::endl;
+
+        applyGlobalIDs(globalIds);
+    }
+
+    /**
+     * Every footpath must stay inside one cell -- otherwise a walk could leave the cell
+     * without crossing a border stop event, and the customization would miss it.
+     */
+    bool assertNoCutTransfers() const noexcept {
+        for (const auto [edge, from] : transferGraph_.edgesWithFromVertex()) {
+            const Vertex toStop = transferGraph_.get(ToVertex, edge);
+            if (cellIds_[from] != cellIds_[toStop]) return false;
+        }
+        return true;
+    }
 
     // --- Serialization ---
 
@@ -241,6 +346,7 @@ public:
         IO::deserialize(fileName, routes_, trips_, events_, routesBySequenceHash_, eventToTrip_, transferGraph_,
                         numberOfStops_, cellIds_, unionFind_, layoutGraph_, latestChanges_, minTransferTimes_,
                         implicitDepartureBufferTimes_, implicitArrivalBufferTimes_);
+        deriveNumberOfLevels();
     }
 
     void printInfo() const {
@@ -303,9 +409,13 @@ private:
     bool implicitDepartureBufferTimes_ = false;
     bool implicitArrivalBufferTimes_ = false;
 
-    // Partitioning/Layout (kept for compatibility with existing code paths)
+    // Partitioning / cell hierarchy. Invariant under RT updates.
     std::vector<uint16_t> cellIds_;
+    int numberOfLevels_ = 0;
     UnionFind unionFind_;
+    // Size of each footpath-connected component, indexed by its union-find representative
+    // (0 for non-representatives). Derived state, rebuilt by createCompactLayoutGraph().
+    std::vector<std::uint32_t> componentWeight_;
     StaticGraphWithWeightsAndCoordinates layoutGraph_;
 
     ChangeSummary latestChanges_;
