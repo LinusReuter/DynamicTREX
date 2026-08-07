@@ -302,7 +302,7 @@ public:
                 for (std::size_t idx = 0; idx < limit; ++idx) {
                     const PersistentStopEventId pEvent =
                         queryData_->flatToPersistentEvent[StopEventId(firstEvent + idx)];
-                    for (const auto from : store_.incoming_sorted(pEvent)) {
+                    for (const auto from : store_.incoming_unsorted(pEvent)) {
                         if constexpr (collectTransferStats) ++lc.arrivalUpstreamSources;
                         mutator.recordSourceTripOfEvent(from, localTrips);
                     }
@@ -463,17 +463,29 @@ private:
             toDiscoverIncoming.insert(toDiscoverIncoming.end(), keys.begin(), keys.end());
         }
 
-        // An earlier departure can newly enable incoming transfers into the same stop on the
-        // NEXT trip of the same route: rediscover that event too.
-        const std::size_t numTrips = qd.routeOfTrip.size();
-        for (const auto& [pEvent, isEarlierDep] : changes.modifiedEvents) {
-            if (!isEarlierDep) continue;
-            const StopEventId flatEvent = queryData_->persistentToFlatEvent[pEvent];
+        // U-turn neighbours of every modified event. isUTurn(from, i, to, j) reads
+        // arrival(from, i-1) and departure(to, j+1), so a time change at index k can flip the
+        // verdict for transfers sourced at k+1 and targeted at k-1 -- neither is otherwise a
+        // rediscovery target, and both flip directions matter (lost legal transfer / stale edge).
+        for (const auto& modified : changes.modifiedEvents) {
+            // .second (earlierDep) is deliberately unused: it does not say which of arrival or
+            // departure moved, so both neighbours are always seeded.
+            const StopEventId flatEvent = queryData_->persistentToFlatEvent[modified.first];
+            // A modified event can be inactive (own modification skipped the stop, or the trip
+            // failed re-insertion); without this the lookups below read out of bounds.
+            if (flatEvent == noStopEvent) continue;
             const TripId flatTrip = qd.tripOfStopEvent[flatEvent];
-            if (static_cast<std::size_t>(flatTrip) + 1 >= numTrips) continue;
-            if (qd.routeOfTrip[flatTrip] != qd.routeOfTrip[flatTrip + 1]) continue;
-            const auto numStops = qd.firstStopEventOfTrip[flatTrip + 1] - qd.firstStopEventOfTrip[flatTrip];
-            toDiscoverIncoming.emplace_back(queryData_->flatToPersistentEvent[flatEvent + numStops]);
+            const StopEventId firstEvent = qd.firstStopEventOfTrip[flatTrip];
+            const StopEventId limitEvent = qd.firstStopEventOfTrip[flatTrip + 1];
+
+            // Both neighbours require k >= 1: isUTurn short-circuits on fromIndex < 2, and there
+            // is no index -1 to target.
+            if (flatEvent > firstEvent) {
+                if (flatEvent + 1 < limitEvent) {
+                    toDiscoverOutgoing.emplace_back(queryData_->flatToPersistentEvent[flatEvent + 1]);
+                }
+                toDiscoverIncoming.emplace_back(queryData_->flatToPersistentEvent[flatEvent - 1]);
+            }
         }
 
         sortUnique(toDiscoverOutgoing);
