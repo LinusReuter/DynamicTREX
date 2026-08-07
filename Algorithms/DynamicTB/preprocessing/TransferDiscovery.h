@@ -237,6 +237,10 @@ public:
         }
 
         if (bestTrip != -1) {
+            // Answer with no trip if noTime
+            if (Time(routeLabel.departureTimes[baseOffset + static_cast<size_t>(bestTrip)]) == noTime) {
+                return std::nullopt;
+            }
             return TripId(queryData_->queryData.firstTripOfRoute[route] + bestTrip);
         }
         return std::nullopt;
