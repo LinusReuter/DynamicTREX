@@ -76,14 +76,15 @@ struct ChangeSummary {
 
     void clear() {
         cancelledTrips.clear();
+        tripsToRediscoverIncomingDueToCancellation.clear();
         addedTrips.clear();
         modifiedEvents.clear();
         tripsWithChangedArrivals.clear();
     }
 
     bool hasStructuralChanges() const {
-        return !cancelledTrips.empty() || !addedTrips.empty() || !modifiedEvents.empty() ||
-               !tripsWithChangedArrivals.empty();
+        return !cancelledTrips.empty() || !tripsToRediscoverIncomingDueToCancellation.empty() ||
+               !addedTrips.empty() || !modifiedEvents.empty() || !tripsWithChangedArrivals.empty();
     }
 };
 
