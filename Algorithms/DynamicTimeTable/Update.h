@@ -109,6 +109,7 @@ private:
 
             bool structural = false;
             bool changedArrivals = false;
+            bool earlierDeparture = false;
             StopIndex maxChangedArrivalIndex(0);
             std::vector<PersistentStopEventId> preActiveEvents;
 
@@ -172,6 +173,7 @@ private:
                     maxChangedArrivalIndex = std::max(maxChangedArrivalIndex, m.stopIndex);
                 }
                 bool earlier_departure = e.departureTime < oldDep;
+                earlierDeparture = earlierDeparture || earlier_departure;
                 context.summary.modifiedEvents.emplace_back(eventId, earlier_departure);
             }
 
@@ -183,6 +185,9 @@ private:
                 extractTrip(data, tripId, context, std::move(preActiveEvents));
             } else {
                 context.modifiedTripsByRoute[trip.route].push_back(tripId);
+                // An earlier departure shrinks this trip's acceptance window from above, so the
+                // sources that fall out of it must be re-pointed at the trip that follows.
+                if (earlierDeparture) recordSuccessorOnRoute(data, tripId, trip.route, context);
                 stats.successfulUpdates++;
             }
         }
@@ -301,6 +306,17 @@ private:
 
         context.summary.cancelledTrips.push_back(makeCancelledTripInfo(tripId, std::move(preActiveEvents)));
         context.extractionQueue.push_back(tripId);
+    }
+
+    // Register the trip that currently follows `tripId` on `routeId` for incoming rediscovery.
+    // Must be called before processInsertions(), so that "follows" means the pre-update successor.
+    static void recordSuccessorOnRoute(const Data& data, const PersistentTripId tripId,
+                                       const PersistentRouteId routeId, UpdateContext& context) {
+        if (!data.isRoute(routeId)) return;
+        const auto& list = data.routes_[routeId].trips;
+        if (const auto it = std::ranges::find(list, tripId); it != list.end() && std::next(it) != list.end()) {
+            context.tripsAfterExtractedTrips.push_back({routeId, *std::next(it)});
+        }
     }
 
     static CancelledTripInfo makeCancelledTripInfo(const PersistentTripId tripId,
