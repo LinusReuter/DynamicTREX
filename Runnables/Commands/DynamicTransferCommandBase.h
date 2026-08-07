@@ -38,6 +38,8 @@ protected:
         addParameter("Min delay (seconds)", "60");
         addParameter("Max delay (seconds)", "600");
         addParameter("Max skipped stops per trip", "1");
+        addParameter("Early delay share", "0");
+        addParameter("Single-event delay share", "0");
     }
 
     void addTransferSetParameters() {
@@ -89,5 +91,7 @@ private:
         cfg.delays.minInitialDelay = Time(getParameter<int>("Min delay (seconds)"));
         cfg.delays.maxInitialDelay = Time(getParameter<int>("Max delay (seconds)"));
         cfg.skips.maxSkippedStopsPerTrip = getParameter<int>("Max skipped stops per trip");
+        cfg.delays.earlyShare = getParameter<double>("Early delay share");
+        cfg.delays.singleEventShare = getParameter<double>("Single-event delay share");
     }
 };

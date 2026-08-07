@@ -37,6 +37,19 @@ struct UpdateSimulationConfig {
         Time maxInitialDelay = Time(30 * 60);
         double travelTimeVariation = 0.2;  // +/- fraction of leg travel time
         FutureStopPolicy stopPolicy = FutureStopPolicy::RandomFutureStop;
+
+        // Fraction of delays applied as a NEGATIVE shift (the trip runs ahead of schedule).
+        // Without these, ChangeSummary::modifiedEvents never carries earlierDep == true, so the
+        // successor-rediscovery seed in collectDiscoveryTargets -- and the whole fall-through case
+        // it exists for -- is never exercised.
+        double earlyShare = 0.0;
+
+        // Fraction of shifts applied to a SINGLE stop event instead of the whole remaining suffix.
+        // A suffix shift moves every event from the start index on, so any dependency that reads a
+        // NEIGHBOURING stop index (the U-turn predicate reads arrival(i-1) and departure(j+1)) is
+        // always accompanied by a modification of the dependent event itself. Single-event shifts
+        // are the only way to separate the two.
+        double singleEventShare = 0.0;
     } delays;
 
     struct SkipConfig {
@@ -54,6 +67,9 @@ struct UpdateSimulationStats {
     std::size_t delayedTrips = 0;
     std::size_t skippedTrips = 0;
     std::size_t modifiedStops = 0;
+    // Subsets of delayedTrips (a trip can be counted in both).
+    std::size_t earlyTrips = 0;
+    std::size_t singleEventTrips = 0;
 };
 
 class UpdateSimulator {
@@ -175,9 +191,21 @@ public:
 
             if (delay == noTime || delay == Time(0)) continue;
 
-            const bool applied = applyDelayToTrip(data, tripId, startIdx, delay, modBuffers[tIdx]);
+            // Short-circuit on share == 0 so the default configuration draws no extra random
+            // numbers and reproduces the previous seeded sequence exactly.
+            const bool early = cfg_.delays.earlyShare > 0.0 && sampleBernoulli(cfg_.delays.earlyShare);
+            const bool singleEvent =
+                cfg_.delays.singleEventShare > 0.0 && sampleBernoulli(cfg_.delays.singleEventShare);
+
+            const bool applied =
+                (early || singleEvent)
+                    ? applyShiftToTrip(data, tripId, startIdx, early ? -toInt(delay) : toInt(delay), singleEvent,
+                                       modBuffers[tIdx])
+                    : applyDelayToTrip(data, tripId, startIdx, delay, modBuffers[tIdx]);
             if (applied) {
                 stats.delayedTrips++;
+                if (early) stats.earlyTrips++;
+                if (singleEvent) stats.singleEventTrips++;
             }
         }
 
@@ -276,6 +304,13 @@ private:
         return Time(static_cast<Time::ValueType>(v));
     }
 
+    bool sampleBernoulli(const double p) {
+        if (p <= 0.0) return false;
+        if (p >= 1.0) return true;
+        std::bernoulli_distribution dist(p);
+        return dist(rng_);
+    }
+
     int sampleInt(const int minVal, const int maxVal) {
         if (minVal >= maxVal) return minVal;
         std::uniform_int_distribution<int> dist(minVal, maxVal);
@@ -325,6 +360,101 @@ private:
         }
 
         return indices;
+    }
+
+    // Largest amount by which the events at [startIdx, endIdx) may be shifted EARLIER without
+    // making the trip's arrival/departure sequence decrease at the window's lower boundary.
+    // Everything inside the window moves together, so only that boundary can be violated.
+    static int64_t slackBefore(const Data& data, const PersistentTrip& trip, const std::size_t startIdx) {
+        const auto& events = data.events();
+        const PersistentStopEvent& e = events[trip.firstEvent + startIdx];
+        int64_t slack = std::numeric_limits<int64_t>::max();
+        if (e.arrivalTime != noTime) slack = std::min(slack, toInt(e.arrivalTime));
+        if (e.departureTime != noTime) slack = std::min(slack, toInt(e.departureTime));
+
+        bool haveArr = false;
+        bool haveDep = false;
+        for (std::size_t i = startIdx; i-- > 0;) {
+            const PersistentStopEvent& p = events[trip.firstEvent + i];
+            if (p.isSkipped) continue;
+            if (!haveArr && p.arrivalTime != noTime && e.arrivalTime != noTime) {
+                slack = std::min(slack, toInt(e.arrivalTime) - toInt(p.arrivalTime));
+                haveArr = true;
+            }
+            if (!haveDep && p.departureTime != noTime && e.departureTime != noTime) {
+                slack = std::min(slack, toInt(e.departureTime) - toInt(p.departureTime));
+                haveDep = true;
+            }
+            if (haveArr && haveDep) break;
+        }
+        return std::max<int64_t>(slack, 0);
+    }
+
+    // Mirror of slackBefore for the window's upper boundary (only needed for a single-event shift;
+    // a suffix shift carries every later event along).
+    static int64_t slackAfter(const Data& data, const PersistentTrip& trip, const std::size_t endIdx) {
+        const auto& events = data.events();
+        const PersistentStopEvent& e = events[trip.firstEvent + endIdx - 1];
+        int64_t slack = std::numeric_limits<int64_t>::max();
+
+        bool haveArr = false;
+        bool haveDep = false;
+        for (std::size_t i = endIdx; i < trip.numberOfEvents; ++i) {
+            const PersistentStopEvent& n = events[trip.firstEvent + i];
+            if (n.isSkipped) continue;
+            if (!haveArr && n.arrivalTime != noTime && e.arrivalTime != noTime) {
+                slack = std::min(slack, toInt(n.arrivalTime) - toInt(e.arrivalTime));
+                haveArr = true;
+            }
+            if (!haveDep && n.departureTime != noTime && e.departureTime != noTime) {
+                slack = std::min(slack, toInt(n.departureTime) - toInt(e.departureTime));
+                haveDep = true;
+            }
+            if (haveArr && haveDep) break;
+        }
+        return std::max<int64_t>(slack, 0);
+    }
+
+    // Shift a window of stop events by one constant signed offset. Covers the two cases outside
+    // applyDelayToTrip's model (which is non-negative, whole-suffix and jittered): running early,
+    // and touching a single stop event. The offset is clamped so the trip stays internally
+    // consistent; FIFO violations against sibling trips are deliberately left in, since resolving
+    // them by extraction/re-insertion is a case the transfer update has to handle anyway.
+    bool applyShiftToTrip(const Data& data, const PersistentTripId tripId, const std::size_t startIdx,
+                          const int64_t requestedDelta, const bool singleEvent, TripModificationBuffer& buffer) {
+        const auto& trips = data.trips();
+        const auto& events = data.events();
+        const std::size_t tIdx = static_cast<std::size_t>(tripId);
+        if (tIdx >= trips.size()) return false;
+
+        const PersistentTrip& trip = trips[tIdx];
+        if (startIdx >= trip.numberOfEvents) return false;
+        if (requestedDelta == 0) return false;
+
+        const std::size_t endIdx = singleEvent ? startIdx + 1 : trip.numberOfEvents;
+
+        int64_t delta = requestedDelta;
+        if (delta < 0) {
+            delta = std::max(delta, -slackBefore(data, trip, startIdx));
+        } else if (singleEvent) {
+            delta = std::min(delta, slackAfter(data, trip, endIdx));
+        }
+        if (delta == 0) return false;
+
+        bool wrote = false;
+        for (std::size_t i = startIdx; i < endIdx; ++i) {
+            const PersistentStopEvent& e = events[trip.firstEvent + i];
+            if (e.isSkipped) continue;
+            if (e.arrivalTime != noTime) {
+                buffer.addStopModification(i, clampToTime(toInt(e.arrivalTime) + delta), noTime, false);
+                wrote = true;
+            }
+            if (e.departureTime != noTime) {
+                buffer.addStopModification(i, noTime, clampToTime(toInt(e.departureTime) + delta), false);
+                wrote = true;
+            }
+        }
+        return wrote;
     }
 
     bool applyDelayToTrip(const Data& data, const PersistentTripId tripId, const std::size_t startIdx, const Time initialDelay,
