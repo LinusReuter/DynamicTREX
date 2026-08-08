@@ -160,8 +160,12 @@ private:
                 if (m.newArrivalTime != unchangedTime) e.arrivalTime = m.newArrivalTime;
                 if (m.newDepartureTime != unchangedTime) e.departureTime = m.newDepartureTime;
 
-                // We expect the upstream stage to have sanitized the data, but we assert just in case.
-                AssertMsg(e.arrivalTime <= e.departureTime, "Logically invalid modification: arrival > departure");
+                // Both fields are real times (TimeSpace.h), so this is the actual dwell invariant --
+                // it would be wrong against a board deadline, which may legitimately precede the
+                // arrival by up to minTransferTime(stop). noTime is a restriction, not a time.
+                AssertMsg(e.arrivalTime == noTime || e.departureTime == noTime ||
+                              e.arrivalTime <= e.departureTime,
+                          "Logically invalid modification: arrival > departure");
 
                 if (m.isSkipped != e.isSkipped) {
                     e.isSkipped = m.isSkipped;

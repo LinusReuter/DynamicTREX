@@ -8,6 +8,7 @@
 
 
 #include "../../DataStructures/DynamicTimeTable/Data.h"
+#include "../../DataStructures/DynamicTimeTable/TimeSpace.h"
 #include "../../Helpers/MultiThreading.h"
 #include "../../Helpers/Types.h"
 #include "../../Helpers/Vector/Vector.h"
@@ -300,21 +301,18 @@ struct DynamicQueryData {
         // noTime marks a forbidden alighting (arrivalTime) or boarding (departureTime) at an event.
         constexpr int64_t noTimeValue = static_cast<int64_t>(Time::InvalidValue);
 
-        auto adjustedArrival = [&](const StopId stop, const std::uint32_t time) -> int64_t {
+        // Arrivals are real in both spaces. Departures are board deadlines in the export, so
+        // they must be converted back before any within-trip comparison below -- that conversion
+        // is the sole inverse of the one applied in buildFromDynamic (see TimeSpace.h).
+        auto adjustedArrival = [&](const StopId, const std::uint32_t time) -> int64_t {
             if (time == Time::InvalidValue) return noTimeValue;
-            int64_t value = static_cast<int64_t>(time);
-            if (data.usesImplicitArrivalBufferTimes()) {
-                value -= data.minTransferTime(stop);
-            }
-            return value;
+            return static_cast<int64_t>(time);
         };
         auto adjustedDeparture = [&](const StopId stop, const std::uint32_t time) -> int64_t {
             if (time == Time::InvalidValue) return noTimeValue;
-            int64_t value = static_cast<int64_t>(time);
-            if (data.usesImplicitDepartureBufferTimes()) {
-                value += data.minTransferTime(stop);
-            }
-            return value;
+            if (!data.exportsBoardDeadlines()) return static_cast<int64_t>(time);
+            return static_cast<int64_t>(
+                TimeSpace::toRealDeparture(Time(time), data.minTransferTime(stop)));
         };
 
         // Check forward translation layers and per-route stop sequences
@@ -694,6 +692,8 @@ struct DynamicQueryData {
         const auto& routes = data.routes();
         const auto& trips = data.trips();
         const auto& events = data.events();
+        const auto& minTransferTimes = data.minTransferTimes();
+        const bool exportsDeadlines = data.exportsBoardDeadlines();
 
         // 1. Prefix-Sum Offset Pass (Sequential, enables parallelization later)
         struct RouteOffsets {
@@ -807,13 +807,21 @@ struct DynamicQueryData {
 
                     builder.tripOfStopEvent[currentEvent] = currentTrip;
 
-                    builder.eventLookup[currentEvent] = TripBased::EventLookup(pRoute.stopSequence[stopIdx], pEvent.arrivalTime);
+                    const StopId stop = pRoute.stopSequence[stopIdx];
+                    // Stored times are real; the exported departure is the board deadline
+                    // `d - minTransferTime(stop)` that TransferDiscovery, isUTurn and the
+                    // minimization compare against a foreign arrival. Only place this is applied.
+                    const Time boardDeadline =
+                        exportsDeadlines ? TimeSpace::toBoardDeadline(pEvent.departureTime, minTransferTimes[stop])
+                                         : pEvent.departureTime;
+
+                    builder.eventLookup[currentEvent] = TripBased::EventLookup(stop, pEvent.arrivalTime);
                     builder.eventArrTimes[currentEvent] = pEvent.arrivalTime;
-                    builder.eventDepTimes[currentEvent] = pEvent.departureTime;
+                    builder.eventDepTimes[currentEvent] = boardDeadline;
 
                     if (stopIdx + 1 < pRoute.stopSequence.size()) {
                         size_t labelIdx = (stopIdx * pRoute.trips.size()) + tripOffset;
-                        builder.routeLabels[currentRoute].departureTimes[labelIdx] = pEvent.departureTime;
+                        builder.routeLabels[currentRoute].departureTimes[labelIdx] = boardDeadline;
                     }
 
                     currentEvent++;

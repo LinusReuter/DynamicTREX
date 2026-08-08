@@ -76,12 +76,12 @@ public:
         eventToTrip_.clear();
         eventToTrip_.reserve(totalEvents);
 
-        // Ensure implicit buffer times from RAPTOR are applied so they are
-        // imported directly as the times of the dynamic timetable
-        rd.useImplicitDepartureBufferTimes();
-
-        implicitDepartureBufferTimes_ = rd.implicitDepartureBufferTimes;
-        implicitArrivalBufferTimes_ = rd.implicitArrivalBufferTimes;
+        // The dynamic timetable stores REAL times (see TimeSpace.h): every invariant the update
+        // pipeline enforces -- arrival <= departure, monotonicity along a trip -- holds only in
+        // that space. Undo any implicit buffer encoding the RAPTOR data carries before importing;
+        // the board-deadline encoding is re-applied once, on the query-data export.
+        rd.dontUseImplicitDepartureBufferTimes();
+        rd.dontUseImplicitArrivalBufferTimes();
 
         for (std::size_t r = 0; r < numRoutes; r++) {
             const RouteId staticRouteId(r);
@@ -204,9 +204,10 @@ public:
 
     int minTransferTime(const StopId stop) const noexcept { return minTransferTimes_[stop]; }
 
-    bool usesImplicitDepartureBufferTimes() const noexcept { return implicitDepartureBufferTimes_; }
-
-    bool usesImplicitArrivalBufferTimes() const noexcept { return implicitArrivalBufferTimes_; }
+    // Stored times are real (TimeSpace.h). This flag describes the *exported* DynamicQueryData:
+    // when set, its departure arrays hold board deadlines `d - minTransferTime(stop)`, matching
+    // the static TripBased convention. Storage is unaffected either way.
+    bool exportsBoardDeadlines() const noexcept { return exportsBoardDeadlines_; }
 
     // --- O(1) resolution helpers ---
 
@@ -356,7 +357,7 @@ public:
     void serialize(const std::string& fileName) const noexcept {
         IO::serialize(fileName, routes_, trips_, events_, routesBySequenceHash_, eventToTrip_, *transferGraph_,
                       numberOfStops_, cellIds_, unionFind_, layoutGraph_, latestChanges_, minTransferTimes_,
-                      implicitDepartureBufferTimes_, implicitArrivalBufferTimes_);
+                      exportsBoardDeadlines_);
     }
 
     void deserialize(const std::string& fileName) noexcept {
@@ -364,7 +365,7 @@ public:
         transferGraph_ = std::make_shared<TransferGraph>();
         IO::deserialize(fileName, routes_, trips_, events_, routesBySequenceHash_, eventToTrip_, *transferGraph_,
                         numberOfStops_, cellIds_, unionFind_, layoutGraph_, latestChanges_, minTransferTimes_,
-                        implicitDepartureBufferTimes_, implicitArrivalBufferTimes_);
+                        exportsBoardDeadlines_);
         deriveNumberOfLevels();
         // Derived from transferGraph_, so it is rebuilt rather than stored.
         rebuildReverseTransferGraph();
@@ -434,8 +435,7 @@ private:
     std::shared_ptr<TransferGraph> reverseTransferGraph_ = std::make_shared<TransferGraph>();
     std::size_t numberOfStops_ = 0;
     std::vector<int> minTransferTimes_;
-    bool implicitDepartureBufferTimes_ = false;
-    bool implicitArrivalBufferTimes_ = false;
+    bool exportsBoardDeadlines_ = true;
 
     // Partitioning / cell hierarchy. Invariant under RT updates.
     std::vector<uint16_t> cellIds_;

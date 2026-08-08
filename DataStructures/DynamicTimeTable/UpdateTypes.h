@@ -10,6 +10,9 @@ namespace DynamicTimeTable {
 // Incoming Update Inputs
 // ---------------------------------------------------------
 
+// Everything below carries REAL times -- wall clock, exactly as a GTFS-RT feed reports them. A
+// feed adapter needs no knowledge of minTransferTime or of the board-deadline encoding, which
+// lives only in the exported DynamicQueryData. See DataStructures/DynamicTimeTable/TimeSpace.h.
 struct StopModification {
     StopIndex stopIndex;
     // unchangedTime: field not affected. noTime: *set* the restriction (alighting resp. boarding
