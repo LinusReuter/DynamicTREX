@@ -45,7 +45,11 @@ using PackedTransfer = TaggedInteger<10, u_int32_t, -u_int32_t(1)>;
 constexpr PackedTransfer noPackedTransfer(PackedTransfer::InvalidValue);
 
 using Time = TaggedInteger<11, u_int32_t, -u_int32_t(1)>;
+// On a stop event: alighting (arrivalTime) resp. boarding (departureTime) is forbidden.
 constexpr Time noTime(Time::InvalidValue);
+// In an update request only: "this field is not affected by the modification". Distinct from
+// noTime so that a feed *can* set a board/exit restriction; never stored on a stop event.
+constexpr Time unchangedTime(Time::InvalidValue - 1);
 
 // ---------------------------------------------------------
 // Persistent (Stable) Identity Types for realtime updates

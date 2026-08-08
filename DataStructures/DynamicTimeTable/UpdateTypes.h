@@ -12,16 +12,18 @@ namespace DynamicTimeTable {
 
 struct StopModification {
     StopIndex stopIndex;
-    Time newArrivalTime = noTime;  // noValue if not affected
-    Time newDepartureTime = noTime;
+    // unchangedTime: field not affected. noTime: *set* the restriction (alighting resp. boarding
+    // forbidden at this event). Any other value: the new real time.
+    Time newArrivalTime = unchangedTime;
+    Time newDepartureTime = unchangedTime;
     bool isSkipped = false;  // If true, triggers a route extraction/re-insertion
 };
 
 struct AddedTripInfo {
     PersistentRouteId preferredRouteId = noPersistentRouteId;
     std::vector<StopId> stopSequence;
-    std::vector<Time> arrivalTimes;
-    std::vector<Time> departureTimes;
+    std::vector<Time> arrivalTimes;    // real times, or noTime to forbid alighting
+    std::vector<Time> departureTimes;  // real times, or noTime to forbid boarding
 };
 
 struct PendingUpdates {

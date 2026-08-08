@@ -156,8 +156,9 @@ private:
                 const Time oldArr = e.arrivalTime;
                 const Time oldDep = e.departureTime;
 
-                if (m.newArrivalTime != noTime) e.arrivalTime = m.newArrivalTime;
-                if (m.newDepartureTime != noTime) e.departureTime = m.newDepartureTime;
+                // unchangedTime leaves the field alone; noTime *sets* a board/exit restriction.
+                if (m.newArrivalTime != unchangedTime) e.arrivalTime = m.newArrivalTime;
+                if (m.newDepartureTime != unchangedTime) e.departureTime = m.newDepartureTime;
 
                 // We expect the upstream stage to have sanitized the data, but we assert just in case.
                 AssertMsg(e.arrivalTime <= e.departureTime, "Logically invalid modification: arrival > departure");

@@ -261,6 +261,8 @@ private:
 
         bool used() const { return active && !modifications.empty(); }
 
+        // newArrival / newDeparture are REAL times; unchangedTime marks a field this call does
+        // not touch (noTime would mean "forbid boarding/alighting here", a different request).
         void addStopModification(const std::size_t stopIdx, const Time newArrival, const Time newDeparture, const bool skipped) {
             active = true;
             const auto it = indexToPos.find(stopIdx);
@@ -274,13 +276,15 @@ private:
                 modifications.push_back(mod);
             } else {
                 StopModification& mod = modifications[it->second];
-                if (newArrival != noTime) mod.newArrivalTime = newArrival;
-                if (newDeparture != noTime) mod.newDepartureTime = newDeparture;
+                if (newArrival != unchangedTime) mod.newArrivalTime = newArrival;
+                if (newDeparture != unchangedTime) mod.newDepartureTime = newDeparture;
                 if (skipped) mod.isSkipped = true;
             }
         }
 
-        void addSkip(const std::size_t stopIdx) { addStopModification(stopIdx, noTime, noTime, true); }
+        void addSkip(const std::size_t stopIdx) {
+            addStopModification(stopIdx, unchangedTime, unchangedTime, true);
+        }
 
         std::vector<StopModification> takeSorted() {
             std::vector<StopModification> out = std::move(modifications);
@@ -299,7 +303,8 @@ private:
     static inline Time clampToTime(const int64_t value) {
         int64_t v = value;
         if (v < 0) v = 0;
-        const int64_t maxValid = static_cast<int64_t>(Time::InvalidValue) - 1;
+        // Stay below both reserved sentinels: noTime (InvalidValue) and unchangedTime.
+        const int64_t maxValid = static_cast<int64_t>(Time::InvalidValue) - 2;
         if (v > maxValid) v = maxValid;
         return Time(static_cast<Time::ValueType>(v));
     }
@@ -446,11 +451,11 @@ private:
             const PersistentStopEvent& e = events[trip.firstEvent + i];
             if (e.isSkipped) continue;
             if (e.arrivalTime != noTime) {
-                buffer.addStopModification(i, clampToTime(toInt(e.arrivalTime) + delta), noTime, false);
+                buffer.addStopModification(i, clampToTime(toInt(e.arrivalTime) + delta), unchangedTime, false);
                 wrote = true;
             }
             if (e.departureTime != noTime) {
-                buffer.addStopModification(i, noTime, clampToTime(toInt(e.departureTime) + delta), false);
+                buffer.addStopModification(i, unchangedTime, clampToTime(toInt(e.departureTime) + delta), false);
                 wrote = true;
             }
         }
@@ -474,10 +479,12 @@ private:
             const PersistentStopEvent& e = events[trip.firstEvent + i];
 
             if (e.arrivalTime != noTime) {
-                buffer.addStopModification(i, clampToTime(toInt(e.arrivalTime) + currentDelay), noTime, false);
+                buffer.addStopModification(i, clampToTime(toInt(e.arrivalTime) + currentDelay), unchangedTime,
+                                           false);
             }
             if (e.departureTime != noTime) {
-                buffer.addStopModification(i, noTime, clampToTime(toInt(e.departureTime) + currentDelay), false);
+                buffer.addStopModification(i, unchangedTime, clampToTime(toInt(e.departureTime) + currentDelay),
+                                           false);
             }
 
             if (i + 1 < trip.numberOfEvents) {
