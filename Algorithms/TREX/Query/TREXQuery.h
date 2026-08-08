@@ -169,27 +169,27 @@ private:
     inline void computeInitialAndFinalTransfers() noexcept {
         profiler.startPhase();
         transferFromSource[lastSource] = INFTY;
-        for (const Edge edge : data.transferGraph.edgesFrom(lastSource)) {
-            const Vertex stop = data.transferGraph.get(ToVertex, edge);
+        for (const Edge edge : data.transferGraph().edgesFrom(lastSource)) {
+            const Vertex stop = data.transferGraph().get(ToVertex, edge);
             transferFromSource[stop] = INFTY;
         }
         transferToTarget[lastTarget] = INFTY;
-        for (const Edge edge : data.reverseTransferGraph.edgesFrom(lastTarget)) {
-            const Vertex stop = data.reverseTransferGraph.get(ToVertex, edge);
+        for (const Edge edge : data.reverseTransferGraph().edgesFrom(lastTarget)) {
+            const Vertex stop = data.reverseTransferGraph().get(ToVertex, edge);
             transferToTarget[stop] = INFTY;
         }
         transferFromSource[sourceStop] = 0;
-        for (const Edge edge : data.transferGraph.edgesFrom(sourceStop)) {
-            const Vertex stop = data.transferGraph.get(ToVertex, edge);
-            transferFromSource[stop] = data.transferGraph.get(TravelTime, edge);
+        for (const Edge edge : data.transferGraph().edgesFrom(sourceStop)) {
+            const Vertex stop = data.transferGraph().get(ToVertex, edge);
+            transferFromSource[stop] = data.transferGraph().get(TravelTime, edge);
         }
         transferToTarget[targetStop] = 0;
         if (sourceStop == targetStop) addTargetLabel(sourceDepartureTime);
-        for (const Edge edge : data.reverseTransferGraph.edgesFrom(targetStop)) {
-            const Vertex stop = data.reverseTransferGraph.get(ToVertex, edge);
+        for (const Edge edge : data.reverseTransferGraph().edgesFrom(targetStop)) {
+            const Vertex stop = data.reverseTransferGraph().get(ToVertex, edge);
             if (stop == sourceStop)
-                addTargetLabel(sourceDepartureTime + data.reverseTransferGraph.get(TravelTime, edge));
-            transferToTarget[stop] = data.reverseTransferGraph.get(TravelTime, edge);
+                addTargetLabel(sourceDepartureTime + data.reverseTransferGraph().get(TravelTime, edge));
+            transferToTarget[stop] = data.reverseTransferGraph().get(TravelTime, edge);
         }
         lastSource = sourceStop;
         lastTarget = targetStop;
@@ -202,8 +202,8 @@ private:
         for (const RAPTOR::RouteSegment& route : data.routesContainingStop(sourceStop)) {
             reachedRoutes.insert(route.routeId);
         }
-        for (const Edge edge : data.transferGraph.edgesFrom(sourceStop)) {
-            const Vertex stop = data.transferGraph.get(ToVertex, edge);
+        for (const Edge edge : data.transferGraph().edgesFrom(sourceStop)) {
+            const Vertex stop = data.transferGraph().get(ToVertex, edge);
             for (const RAPTOR::RouteSegment& route : data.routesContainingStop(StopId(stop))) {
                 reachedRoutes.insert(route.routeId);
             }
@@ -429,8 +429,8 @@ public:
             std::cout << name << "," << bytes << "," << kb << "," << mb << std::endl;
         };
 
-        row("data.transferGraph", data.transferGraph.memoryUsageInBytes());
-        row("data.reverseTransferGraph", data.reverseTransferGraph.memoryUsageInBytes());
+        row("data.transferGraph", data.transferGraph().memoryUsageInBytes());
+        row("data.reverseTransferGraph", data.reverseTransferGraph().memoryUsageInBytes());
         row("data.eventLookup", Vector::memoryUsageInBytes(data.eventLookup));
         row("data.eventArrTimes", Vector::memoryUsageInBytes(data.eventArrTimes));
         row("data.eventDepTimes", Vector::memoryUsageInBytes(data.eventDepTimes));

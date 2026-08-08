@@ -53,8 +53,9 @@ struct DynamicQueryData {
         // Per-route labels carry an inner departureTimes vector each.
         r += static_cast<long long>(sizeof(TripBased::RouteLabel)) * static_cast<long long>(qd.routeLabels.size());
         for (const auto& label : qd.routeLabels) add(label.departureTimes);
-        r += capacity ? qd.transferGraph.memoryUsageInBytes() : qd.transferGraph.byteSize();
-        r += capacity ? qd.reverseTransferGraph.memoryUsageInBytes() : qd.reverseTransferGraph.byteSize();
+        // The forward/reverse transfer graphs are shared with DynamicTimeTable::Data (they are
+        // invariant under RT updates) and are counted there, in Data::dataBytes -- excluded here
+        // so that they are not double-counted against the per-instance total.
         return r;
     }
 
@@ -723,9 +724,10 @@ struct DynamicQueryData {
         // 2. Allocate Builder and Translation Layers
         TripBased::QueryDataBuilder builder;
 
-        builder.transferGraph = data.transferGraph();
-        builder.reverseTransferGraph = data.transferGraph();
-        builder.reverseTransferGraph.revert();
+        // Share, do not copy. The footpath graph and its reversal are invariant under RT updates
+        // and Data owns both, so this export takes a handle
+        builder.transferGraphPtr = data.transferGraphPtr();
+        builder.reverseTransferGraphPtr = data.reverseTransferGraphPtr();
 
         builder.eventLookup.resize(activeEventCount);
         builder.eventArrTimes.resize(activeEventCount);

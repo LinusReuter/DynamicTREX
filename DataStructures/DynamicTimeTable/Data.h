@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -46,7 +47,8 @@ public:
     explicit Data(const RAPTOR::Data& raptorData) { importFromRaptor(raptorData); }
 
     void importFromRaptor(const RAPTOR::Data& raptorData) {
-        transferGraph_ = raptorData.transferGraph;
+        // Fresh allocation: the handle may be shared with previously exported query data.
+        transferGraph_ = std::make_shared<TransferGraph>(raptorData.transferGraph);
         numberOfStops_ = raptorData.numberOfStops();
 
         minTransferTimes_.assign(numberOfStops_, 0);
@@ -128,6 +130,7 @@ public:
         }
 
         rebuildRoutesBySequenceHash();
+        rebuildReverseTransferGraph();
     }
 
     // --- Change Summary ---
@@ -157,7 +160,18 @@ public:
     const std::vector<PersistentRoute>& routes() const noexcept { return routes_; }
     const std::vector<PersistentTrip>& trips() const noexcept { return trips_; }
     const std::vector<PersistentStopEvent>& events() const noexcept { return events_; }
-    const TransferGraph& transferGraph() const noexcept { return transferGraph_; }
+    const TransferGraph& transferGraph() const noexcept { return *transferGraph_; }
+
+    // Shared handles: the graphs are invariant, so every consumer (notably the per-update
+    // query-data export) references the single instance owned here instead of copying it.
+    std::shared_ptr<const TransferGraph> transferGraphPtr() const noexcept { return transferGraph_; }
+
+    // RT updates never add stops or footpaths, so the reversal is invariant for the lifetime of
+    // the instance. Reverting costs a full CSR rebuild with an edge permutation, which the
+    // query-data export used to pay on every update batch; it is computed once here instead.
+    const TransferGraph& reverseTransferGraph() const noexcept { return *reverseTransferGraph_; }
+
+    std::shared_ptr<const TransferGraph> reverseTransferGraphPtr() const noexcept { return reverseTransferGraph_; }
 
     const std::vector<int>& minTransferTimes() const noexcept { return minTransferTimes_; }
 
@@ -174,7 +188,10 @@ public:
                       (capacity ? static_cast<long long>(routes_.capacity()) : static_cast<long long>(routes_.size()));
         for (const auto& route : routes_) r += v(route.stopSequence) + v(route.trips);
         r += v(trips_) + v(events_) + v(eventToTrip_) + v(minTransferTimes_) + v(cellIds_);
-        r += capacity ? transferGraph_.memoryUsageInBytes() : transferGraph_.byteSize();
+        // The two graphs are shared with every exported QueryData; they are accounted for
+        // here (once) and deliberately excluded from the per-QueryData figures.
+        r += capacity ? transferGraph_->memoryUsageInBytes() : transferGraph_->byteSize();
+        r += capacity ? reverseTransferGraph_->memoryUsageInBytes() : reverseTransferGraph_->byteSize();
         // Approximate the sequence-hash multimap (bucket entries + payload vectors).
         for (const auto& [key, bucket] : routesBySequenceHash_) {
             r += static_cast<long long>(sizeof(std::size_t) + sizeof(void*) * 2) + v(bucket);
@@ -270,8 +287,8 @@ public:
     void createCompactLayoutGraph() {
         unionFind_.reset(static_cast<int>(numberOfStops_));
 
-        for (const auto [edge, from] : transferGraph_.edgesWithFromVertex()) {
-            const Vertex toStop = transferGraph_.get(ToVertex, edge);
+        for (const auto [edge, from] : transferGraph_->edgesWithFromVertex()) {
+            const Vertex toStop = transferGraph_->get(ToVertex, edge);
             unionFind_(from, toStop);
         }
 
@@ -327,8 +344,8 @@ public:
      * without crossing a border stop event, and the customization would miss it.
      */
     bool assertNoCutTransfers() const noexcept {
-        for (const auto [edge, from] : transferGraph_.edgesWithFromVertex()) {
-            const Vertex toStop = transferGraph_.get(ToVertex, edge);
+        for (const auto [edge, from] : transferGraph_->edgesWithFromVertex()) {
+            const Vertex toStop = transferGraph_->get(ToVertex, edge);
             if (cellIds_[from] != cellIds_[toStop]) return false;
         }
         return true;
@@ -337,16 +354,20 @@ public:
     // --- Serialization ---
 
     void serialize(const std::string& fileName) const noexcept {
-        IO::serialize(fileName, routes_, trips_, events_, routesBySequenceHash_, eventToTrip_, transferGraph_,
+        IO::serialize(fileName, routes_, trips_, events_, routesBySequenceHash_, eventToTrip_, *transferGraph_,
                       numberOfStops_, cellIds_, unionFind_, layoutGraph_, latestChanges_, minTransferTimes_,
                       implicitDepartureBufferTimes_, implicitArrivalBufferTimes_);
     }
 
     void deserialize(const std::string& fileName) noexcept {
-        IO::deserialize(fileName, routes_, trips_, events_, routesBySequenceHash_, eventToTrip_, transferGraph_,
+        // Fresh allocation: the handle may be shared with previously exported query data.
+        transferGraph_ = std::make_shared<TransferGraph>();
+        IO::deserialize(fileName, routes_, trips_, events_, routesBySequenceHash_, eventToTrip_, *transferGraph_,
                         numberOfStops_, cellIds_, unionFind_, layoutGraph_, latestChanges_, minTransferTimes_,
                         implicitDepartureBufferTimes_, implicitArrivalBufferTimes_);
         deriveNumberOfLevels();
+        // Derived from transferGraph_, so it is rebuilt rather than stored.
+        rebuildReverseTransferGraph();
     }
 
     void printInfo() const {
@@ -381,6 +402,11 @@ private:
         return true;
     }
 
+    void rebuildReverseTransferGraph() {
+        reverseTransferGraph_ = std::make_shared<TransferGraph>(*transferGraph_);
+        reverseTransferGraph_->revert();
+    }
+
     void rebuildRoutesBySequenceHash() {
         routesBySequenceHash_.clear();
         routesBySequenceHash_.reserve(routes_.size());
@@ -402,8 +428,10 @@ private:
     // O(1) event-resolution helpers
     std::vector<PersistentTripId> eventToTrip_;
 
-    // Static topology extracted from RAPTOR (currently used internally)
-    TransferGraph transferGraph_;
+    // Static topology extracted from RAPTOR (currently used internally). Invariant under RT
+    // updates, hence the cached reversal (derived state, not serialized).
+    std::shared_ptr<TransferGraph> transferGraph_ = std::make_shared<TransferGraph>();
+    std::shared_ptr<TransferGraph> reverseTransferGraph_ = std::make_shared<TransferGraph>();
     std::size_t numberOfStops_ = 0;
     std::vector<int> minTransferTimes_;
     bool implicitDepartureBufferTimes_ = false;

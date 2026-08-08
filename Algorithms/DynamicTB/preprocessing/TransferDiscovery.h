@@ -107,7 +107,7 @@ public:
 
         ws.connectedStops.clear();
         ws.connectedStops.emplace_back(toStop, Time(0));
-        const auto& rtg = qd.reverseTransferGraph;
+        const auto& rtg = qd.reverseTransferGraph();
         for (const auto edge : rtg.edgesFrom(toStop)) {
             ws.connectedStops.emplace_back(StopId(rtg.get(ToVertex, edge)), Time(rtg.get(TravelTime, edge)));
         }
@@ -187,7 +187,7 @@ public:
      */
     inline void appendConnectedStops(StopId fromStop, std::vector<std::pair<StopId, Time>>& out) const {
         out.emplace_back(fromStop, 0);
-        const auto& tg = queryData_->queryData.transferGraph;
+        const auto& tg = queryData_->queryData.transferGraph();
         for (const auto edge : tg.edgesFrom(fromStop)) {
             auto toStop = StopId(tg.get(ToVertex, edge));
             auto travelTime = Time(tg.get(TravelTime, edge));

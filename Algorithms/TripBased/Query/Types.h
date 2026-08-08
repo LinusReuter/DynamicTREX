@@ -25,6 +25,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #pragma once
 
 #include <cassert>
+#include <memory>
 
 #include "../../../Helpers/Types.h"
 #include "../../../DataStructures/TripBased/Data.h"
@@ -165,8 +166,13 @@ struct EventLookup {
 };
 
 struct QueryDataBuilder {
-    TransferGraph transferGraph;
-    TransferGraph reverseTransferGraph;
+    // Footpath graphs are invariant for the lifetime of an instance, so they are shared
+    // rather than copied into every exported QueryData.
+    std::shared_ptr<const TransferGraph> transferGraphPtr;
+    std::shared_ptr<const TransferGraph> reverseTransferGraphPtr;
+
+    const TransferGraph& transferGraph() const noexcept { return *transferGraphPtr; }
+    const TransferGraph& reverseTransferGraph() const noexcept { return *reverseTransferGraphPtr; }
 
     std::vector<EventLookup> eventLookup;
     std::vector<std::uint32_t> eventArrTimes;
@@ -187,8 +193,8 @@ struct QueryDataBuilder {
 class QueryData {
 public:
     QueryData(QueryDataBuilder&& builder)
-        : transferGraph(std::move(builder.transferGraph)),
-          reverseTransferGraph(std::move(builder.reverseTransferGraph)),
+        : transferGraphPtr(std::move(builder.transferGraphPtr)),
+          reverseTransferGraphPtr(std::move(builder.reverseTransferGraphPtr)),
           eventLookup(std::move(builder.eventLookup)),
           eventArrTimes(std::move(builder.eventArrTimes)),
           eventDepTimes(std::move(builder.eventDepTimes)),
@@ -203,8 +209,8 @@ public:
           routeLabels(std::move(builder.routeLabels)) {}
 
     QueryData(const Data& data)
-        : transferGraph(data.raptorData.transferGraph),
-          reverseTransferGraph(data.raptorData.transferGraph),
+        : transferGraphPtr(std::make_shared<TransferGraph>(data.raptorData.transferGraph)),
+          reverseTransferGraphPtr(std::make_shared<TransferGraph>(data.raptorData.transferGraph)),
           eventLookup(data.numberOfStopEvents()),
           eventArrTimes(data.numberOfStopEvents()),
           eventDepTimes(data.numberOfStopEvents()),
@@ -217,7 +223,9 @@ public:
           firstStopIdOfRoute(data.firstStopIdOfTrip),
           routeStopSequences(data.raptorData.stopIds),
           routeLabels(data.numberOfRoutes()) {
-        reverseTransferGraph.revert();
+        // This path owns its reverse graph exclusively (no external holder), so it is safe
+        // to revert in place right after construction.
+        std::const_pointer_cast<TransferGraph>(reverseTransferGraphPtr)->revert();
 
 #pragma omp parallel for
         for (size_t event = 0; event < data.numberOfStopEvents(); ++event) {
@@ -254,8 +262,12 @@ public:
     }
 
 public:
-    TransferGraph transferGraph;
-    TransferGraph reverseTransferGraph;
+    // Shared with the owning instance data (footpaths are invariant under RT updates).
+    std::shared_ptr<const TransferGraph> transferGraphPtr;
+    std::shared_ptr<const TransferGraph> reverseTransferGraphPtr;
+
+    const TransferGraph& transferGraph() const noexcept { return *transferGraphPtr; }
+    const TransferGraph& reverseTransferGraph() const noexcept { return *reverseTransferGraphPtr; }
 
     std::vector<EventLookup> eventLookup;  // Stop and arrival time
     std::vector<std::uint32_t> eventArrTimes;
@@ -442,12 +454,12 @@ inline bool isValidTransfer(const TripId fromTrip, const StopIndex fromIndex, co
     auto to_route = qd.routeOfTrip[toTrip];
     auto stop_to = qd.stopArrayOfRoute(to_route)[toIndex];
     if (stop_from != stop_to) {
-        auto edge = qd.transferGraph.findEdge(stop_from, stop_to);
+        auto edge = qd.transferGraph().findEdge(stop_from, stop_to);
         if (edge == noEdge) {
             std::cout << "No edge found for " << stop_from << " -> " << stop_to << std::endl;
             return false;
         }
-        footpath_time = qd.transferGraph.get(TravelTime, qd.transferGraph.findEdge(Vertex(stop_from.value()), Vertex(stop_to.value())));
+        footpath_time = qd.transferGraph().get(TravelTime, qd.transferGraph().findEdge(Vertex(stop_from.value()), Vertex(stop_to.value())));
     }
     auto arr_time = qd.eventArrTimes[qd.firstStopEventOfTrip[fromTrip] + fromIndex];
     auto dep_time = qd.eventDepTimes[qd.firstStopEventOfTrip[toTrip] + toIndex];

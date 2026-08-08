@@ -123,9 +123,9 @@ public:
                 keep = true;
             }
 
-            for (const auto edge : qd.transferGraph.edgesFrom(destinationStop)) {
-                StopId arrivalStop = StopId(qd.transferGraph.get(ToVertex, edge));
-                int arrivalTimeAtStop = destinationArrivalTime + qd.transferGraph.get(TravelTime, edge);
+            for (const auto edge : qd.transferGraph().edgesFrom(destinationStop)) {
+                StopId arrivalStop = StopId(qd.transferGraph().get(ToVertex, edge));
+                int arrivalTimeAtStop = destinationArrivalTime + qd.transferGraph().get(TravelTime, edge);
 
                 localLabels[arrivalStop].checkTimestamp(localTimestamp);
                 if (localLabels[arrivalStop].arrivalTime > arrivalTimeAtStop) {
@@ -178,9 +178,9 @@ public:
 
             // 1. Update labels for the stop itself and its outgoing transfer/footpath neighbors
             localLabels[fromStop].update(localTimestamp, arrivalTime);
-            for (const auto edge : qd.transferGraph.edgesFrom(fromStop)) {
-                auto toStop = StopId(qd.transferGraph.get(ToVertex, edge));
-                const int transferTime = qd.transferGraph.get(TravelTime, edge);
+            for (const auto edge : qd.transferGraph().edgesFrom(fromStop)) {
+                auto toStop = StopId(qd.transferGraph().get(ToVertex, edge));
+                const int transferTime = qd.transferGraph().get(TravelTime, edge);
                 localLabels[toStop].update(localTimestamp, arrivalTime + transferTime);
             }
 
