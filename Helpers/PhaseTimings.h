@@ -19,6 +19,10 @@ struct PhaseTimings {
     std::chrono::microseconds baseTransferUpdate{0};
     std::chrono::microseconds minimizationUpdate{0};
     std::chrono::microseconds exportPhase{0};
+    // TREX customization: the level sweep itself, and the sparse write-back of its rank
+    // decisions into the persistent store. Zero unless a customization stage is wired in.
+    std::chrono::microseconds customization{0};
+    std::chrono::microseconds rankWriteBack{0};
 
     PhaseTimings& operator+=(const PhaseTimings& other) noexcept {
         updateGeneration += other.updateGeneration;
@@ -27,25 +31,29 @@ struct PhaseTimings {
         baseTransferUpdate += other.baseTransferUpdate;
         minimizationUpdate += other.minimizationUpdate;
         exportPhase += other.exportPhase;
+        customization += other.customization;
+        rankWriteBack += other.rankWriteBack;
         return *this;
     }
 
     std::chrono::microseconds total() const noexcept {
         return updateGeneration + timetableUpdate + queryDataExport + baseTransferUpdate + minimizationUpdate +
-               exportPhase;
+               exportPhase + customization + rankWriteBack;
     }
 
     // Element-wise minimum/maximum, used to track spread across iterations/timeline steps.
     static PhaseTimings min(const PhaseTimings& a, const PhaseTimings& b) noexcept {
         return {std::min(a.updateGeneration, b.updateGeneration), std::min(a.timetableUpdate, b.timetableUpdate),
                 std::min(a.queryDataExport, b.queryDataExport), std::min(a.baseTransferUpdate, b.baseTransferUpdate),
-                std::min(a.minimizationUpdate, b.minimizationUpdate), std::min(a.exportPhase, b.exportPhase)};
+                std::min(a.minimizationUpdate, b.minimizationUpdate), std::min(a.exportPhase, b.exportPhase),
+                std::min(a.customization, b.customization), std::min(a.rankWriteBack, b.rankWriteBack)};
     }
 
     static PhaseTimings max(const PhaseTimings& a, const PhaseTimings& b) noexcept {
         return {std::max(a.updateGeneration, b.updateGeneration), std::max(a.timetableUpdate, b.timetableUpdate),
                 std::max(a.queryDataExport, b.queryDataExport), std::max(a.baseTransferUpdate, b.baseTransferUpdate),
-                std::max(a.minimizationUpdate, b.minimizationUpdate), std::max(a.exportPhase, b.exportPhase)};
+                std::max(a.minimizationUpdate, b.minimizationUpdate), std::max(a.exportPhase, b.exportPhase),
+                std::max(a.customization, b.customization), std::max(a.rankWriteBack, b.rankWriteBack)};
     }
 };
 
@@ -79,6 +87,8 @@ public:
         mean.baseTransferUpdate = sum.baseTransferUpdate / static_cast<long>(count);
         mean.minimizationUpdate = sum.minimizationUpdate / static_cast<long>(count);
         mean.exportPhase = sum.exportPhase / static_cast<long>(count);
+        mean.customization = sum.customization / static_cast<long>(count);
+        mean.rankWriteBack = sum.rankWriteBack / static_cast<long>(count);
         return mean;
     }
 
@@ -104,6 +114,8 @@ inline void printPhaseTimings(const PhaseTimings& t, std::ostream& out = std::co
     printRow("Base transfer update", t.baseTransferUpdate);
     printRow("Minimization update", t.minimizationUpdate);
     printRow("Export", t.exportPhase);
+    printRow("Customization", t.customization);
+    printRow("Rank write-back", t.rankWriteBack);
     out << "  " << std::left << std::setw(22) << "Total" << std::right << std::setw(12) << total.count() << " us\n";
 }
 
@@ -121,11 +133,12 @@ inline void printPhaseTimingsSummary(const PhaseTimingsAccumulator& acc, std::os
 
 inline void writePhaseTimingsCsvHeader(std::ostream& out) {
     out << "index,updateGeneration_us,timetableUpdate_us,queryDataExport_us,baseTransferUpdate_us,"
-           "minimizationUpdate_us,export_us,total_us\n";
+           "minimizationUpdate_us,export_us,customization_us,rankWriteBack_us,total_us\n";
 }
 
 inline void writePhaseTimingsCsvRow(const PhaseTimings& t, const long index, std::ostream& out) {
     out << index << ',' << t.updateGeneration.count() << ',' << t.timetableUpdate.count() << ','
         << t.queryDataExport.count() << ',' << t.baseTransferUpdate.count() << ',' << t.minimizationUpdate.count()
-        << ',' << t.exportPhase.count() << ',' << t.total().count() << '\n';
+        << ',' << t.exportPhase.count() << ',' << t.customization.count() << ',' << t.rankWriteBack.count() << ','
+        << t.total().count() << '\n';
 }

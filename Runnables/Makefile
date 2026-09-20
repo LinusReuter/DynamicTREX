@@ -153,6 +153,13 @@ ifdef DYN_COLLECT_TRANSFER_STATS
 	PREFETCH += -DDYN_COLLECT_TRANSFER_STATS
 endif
 
+# Optional: enable compile-gated TREX customization work counters (see
+# CustomizationTypes.h collectCustomizationStats).
+# Usage: make DynamicRelease DYN_COLLECT_CUSTOMIZATION_STATS=1
+ifdef DYN_COLLECT_CUSTOMIZATION_STATS
+	PREFETCH += -DDYN_COLLECT_CUSTOMIZATION_STATS
+endif
+
 # Libraries: default assumes GCC; clang debug builds on macOS usually don't have libatomic
 LIBS_DEFAULT = -ltbb -latomic
 LIBS_DEBUG = $(LIBS_DEFAULT)
@@ -209,7 +216,8 @@ DynamicRelease:
 # separate binary so the plain `Dynamic` stays counter-free for clean timing.
 DynamicStats:
 	$(CC) $(FLAGS) $(OPTIMIZATION) $(RELEASE) \
-	      -o DynamicStats Dynamic.cpp -ltbb -latomic $(PREFETCH) -DDYN_COLLECT_TRANSFER_STATS -g
+	      -o DynamicStats Dynamic.cpp -ltbb -latomic $(PREFETCH) -DDYN_COLLECT_TRANSFER_STATS \
+	      -DDYN_COLLECT_CUSTOMIZATION_STATS -g
 
 # -----------------------------
 # TREX PGO
