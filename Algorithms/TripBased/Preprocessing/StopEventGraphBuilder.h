@@ -144,9 +144,18 @@ public:
             for (const Edge edge : generatedTransfers.edgesFrom(fromVertex)) {
                 transfers.emplace_back(edge);
             }
+            // Total order, not just by arrival: equal-arrival candidates are folded in target
+            // stop event order. The dynamic minimizer sorts the same way, which is what makes the
+            // two reduced sets comparable edge for edge in
+            // `compareDynamicCustomizationToStatic` (Runnables/Commands/DynamicCustomization.h).
+            // Changing this tie-break means changing it on both sides.
             std::stable_sort(transfers.begin(), transfers.end(), [&](const Edge a, const Edge b) {
-                return data.raptorData.stopEvents[generatedTransfers.get(ToVertex, a)].arrivalTime <
-                       data.raptorData.stopEvents[generatedTransfers.get(ToVertex, b)].arrivalTime;
+                const StopEventId targetA = StopEventId(generatedTransfers.get(ToVertex, a));
+                const StopEventId targetB = StopEventId(generatedTransfers.get(ToVertex, b));
+                const int arrivalA = data.raptorData.stopEvents[targetA].arrivalTime;
+                const int arrivalB = data.raptorData.stopEvents[targetB].arrivalTime;
+                if (arrivalA != arrivalB) return arrivalA < arrivalB;
+                return targetA < targetB;
             });
 
             std::vector<Edge> keepTransfers;
