@@ -416,8 +416,8 @@ public:
     /**
      * @brief Write TREX customization results back into the persistent store.
      */
-    void applyRankRaises(std::span<const RankRaise> raises, const int numberOfThreads = 1) const {
-        exporter().applyRankRaises(raises, numberOfThreads);
+    void applyRankChanges(std::span<const RankChange> changes, const int numberOfThreads = 1) const {
+        exporter().applyRankChanges(changes, numberOfThreads);
     }
 
 public:

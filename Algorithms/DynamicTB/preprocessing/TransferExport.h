@@ -47,25 +47,44 @@ public:
     /**
      * @brief Write customization results back into the persistent store.
      *
-     * Sparse by construction: the customization knows exactly which edges it raised, so this
-     * costs O(raises), not O(reduced edges). A full write-back every minute would be tens of
-     * millions of random store lookups at country scale.
+     * Safe to run in parallel: each `RankChange` names a distinct `(from, to)` edge, and the
+     * decision phase assigns every edge to exactly one cell, so no two entries touch the same
+     * edge within one customization.
      */
-    void applyRankRaises(std::span<const RankRaise> raises, const int numberOfThreads = 1) const {
+    void applyRankChanges(std::span<const RankChange> changes, const int numberOfThreads = 1) const {
         const int threads = std::max(1, numberOfThreads);
         omp_set_num_threads(threads);
 #pragma omp parallel for schedule(dynamic, 1024) if (threads > 1)
-        for (std::size_t i = 0; i < raises.size(); ++i) {
-            const RankRaise& raise = raises[i];
-            for (auto& edge : store_.outgoing_mutable(raise.from)) {
-                if (edge.to != raise.to) continue;
-                if (edge.meta.rank < raise.rank) edge.meta.rank = raise.rank;
-                break;
-            }
+        for (std::size_t i = 0; i < changes.size(); ++i) {
+            if (i > 0 && changes[i - 1].from == changes[i].from) continue;  // not this group's start
+            std::size_t end = i + 1;
+            while (end < changes.size() && changes[end].from == changes[i].from) ++end;
+            applyRankGroup(changes.subspan(i, end - i));
         }
     }
 
 private:
+    /// Apply one source event's rank changes in a single pass over its adjacency row.
+    void applyRankGroup(const std::span<const RankChange> group) const {
+        const bool sortedByTarget =
+            std::is_sorted(group.begin(), group.end(),
+                           [](const RankChange& a, const RankChange& b) noexcept { return a.to < b.to; });
+        for (auto& edge : store_.outgoing_mutable(group.front().from)) {
+            if (sortedByTarget) {
+                const auto match = std::lower_bound(
+                    group.begin(), group.end(), edge.to,
+                    [](const RankChange& change, const PersistentStopEventId to) noexcept { return change.to < to; });
+                if (match != group.end() && match->to == edge.to) edge.meta.rank = match->rank;
+            } else {
+                for (const RankChange& change : group) {
+                    if (change.to != edge.to) continue;
+                    edge.meta.rank = change.rank;
+                    break;
+                }
+            }
+        }
+    }
+
     /**
      * @brief Unified multi-pass implementation for exporting graph structures.
      */

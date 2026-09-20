@@ -74,11 +74,12 @@ struct PendingDominationCleanup {
 };
 
 /**
- * @brief A rank raise produced by the TREX customization, in persistent (store) space.
- * Written back into TransferMeta::rank; deliberately sparse, so a customization that
- * touches few cells does not pay an O(reduced edges) write-back.
+ * @brief A rank decision produced by the TREX customization, in persistent (store) space.
+ *
+ * The net decision only, the customization folds the per-level intermediates away before
+ * handing the list over, so no edge appears twice and the write-back has set semantics.
  */
-struct RankRaise {
+struct RankChange {
     PersistentStopEventId from;
     PersistentStopEventId to;
     std::uint8_t rank;
