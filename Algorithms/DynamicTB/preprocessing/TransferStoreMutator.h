@@ -98,8 +98,9 @@ public:
                 if constexpr (collectTransferStats) ++lc.outgoingEdgesRemoved;
                 if (edge.meta.isMinimized) {
                     needsRemin = true;
-                    // The reduced set lost this edge: both endpoints are level-0 affected.
-                    sink.markEdgeChanged(fromEvent, edge.to);
+                    // The reduced set lost this edge: both endpoints are level-0 affected, up to
+                    // the level the departing edge was still admitted at.
+                    sink.markEdgeChanged(fromEvent, edge.to, edge.meta.rank);
                 }
                 store_.remove_outgoing_edge(batch, edge.to);
             },
@@ -136,10 +137,12 @@ public:
                 store_.remove_incoming_edge(batch, from);
                 recordSourceTripOfEvent(from, localTrips);
                 // Incoming storage carries no metadata, so we cannot tell whether the
-                // mirrored outgoing edge was in the reduced set. Mark unconditionally:
-                // over-approximating the affected set only costs extra customization work,
-                // while missing an entry would leave a rank too low (i.e. wrong answers).
-                sink.markEdgeChanged(from, toEvent);
+                // mirrored outgoing edge was in the reduced set, nor what rank it held. Mark
+                // unconditionally and at every level: over-approximating the affected set only
+                // costs extra customization work, while missing an entry would leave a rank too
+                // low (i.e. wrong answers). This is the one site left paying the coarse bound --
+                // tightening it needs the mirrored edge's rank carried on the incoming side.
+                sink.markEdgeChanged(from, toEvent, unknownRankBound);
             },
             [&](PersistentStopEventId from) {
                 if constexpr (collectTransferStats) ++lc.incomingEdgesAdded;
@@ -196,7 +199,7 @@ public:
             if constexpr (collectTransferStats) ++lc.dominationEdgesRemoved;
             if (edge.meta.isMinimized) {
                 recordSourceTripOfEvent(fromEvent, localTrips);
-                sink.markEdgeChanged(fromEvent, u2Event);
+                sink.markEdgeChanged(fromEvent, u2Event, edge.meta.rank);
             }
             break;
         }

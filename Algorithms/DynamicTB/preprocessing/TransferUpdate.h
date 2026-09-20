@@ -185,9 +185,10 @@ public:
                     for (const auto& [from, meta] : removedIncoming) {
                         if (meta.isMinimized) {
                             mutator.recordSourceTripOfEvent(from, localTrips);
-                            // The source lost a reduced-set edge => level-0 affected. The
-                            // target is going away with its trip, so only the source matters.
-                            sink.markEvent(from);
+                            // The source lost a reduced-set edge => level-0 affected, up to the
+                            // level that edge was still admitted at. The target is going away with
+                            // its trip, so only the source matters.
+                            sink.markEvent(from, meta.rank);
                         }
                     }
                 }

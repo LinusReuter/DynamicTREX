@@ -219,8 +219,11 @@ public:
                 const bool keep = foldCandidateDomination(candidate, localTimestamp, localLabels);
                 candidate.edge->meta.isMinimized = keep;
                 if (keep != wasMinimized) {
-                    // The reduced set of both endpoints changed => level-0 affected (TREX).
-                    sink.markEdgeChanged(pFromEvent, candidate.edge->to);
+                    // The reduced set of both endpoints changed => level-0 affected (TREX). An
+                    // edge *entering* the set cannot matter above level 0 until a decision raises
+                    // it (and then the cascade carries it); one *leaving* can matter as high as
+                    // the rank it held, which is why that rank is read before it is cleared.
+                    sink.markEdgeChanged(pFromEvent, candidate.edge->to, keep ? 0 : candidate.edge->meta.rank);
                     if constexpr (collectTransferStats) ++lc.minimizationFlips;
                     // An edge leaving the reduced set carries no meaningful rank any more.
                     // Resetting keeps ranks from drifting upward across days; correctness is
