@@ -1,4 +1,5 @@
 #include "Commands/Dynamic.h"
+#include "Commands/DynamicCustomization.h"
 #include "../Helpers/Console/CommandLineParser.h"
 #include "../Helpers/MultiThreading.h"
 #include "../Shell/Shell.h"
@@ -14,6 +15,13 @@ int main(int argc, char** argv) {
 
     new RAPTORToDynamic(shell);
     new LoadAndApplyDynamicPartition(shell);
+    new BuildCellBorderIndex(shell);
+    new BuildCellStopIndex(shell);
+    new CustomizeDynamic(shell);
+    new CompareDynamicCustomizationToStatic(shell);
+    new SimulateAndCompareCustomization(shell);
+    new SimulateAndCompareCustomizationTimeline(shell);
+    new SimulateCustomizationTimeline(shell);
     new BuildDynamicQueryData(shell);
     new BuildInitialTransferStore(shell);
     new SimulateDynamicUpdate(shell);

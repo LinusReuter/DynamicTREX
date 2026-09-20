@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <iostream>
+#include <optional>
 #include <ostream>
 #include <string>
 #include <string_view>
@@ -31,6 +32,11 @@ using TransferStoreType = TransferStore<PersistentStopEventId, TransferMeta>;
 // Concrete store type (not the ITransferStore base) so the per-edge store calls on the
 // update hot path inline instead of dispatching virtually.
 using TransferUpdater = DynamicTB::Preprocessing::TransferUpdate<TransferStoreType>;
+// The same updater with the level-0 affected-event delta collected instead of compiled away.
+// Only the TREX customization consumes that delta, so plain Dynamic TB runs keep the Null sink
+// and pay nothing; the helpers below are templated on the updater so both can use them.
+using CustomizingTransferUpdater =
+    DynamicTB::Preprocessing::TransferUpdate<TransferStoreType, DynamicTB::Preprocessing::AffectedEventCollector>;
 
 enum class TransferSetKind { Full, Reduced };
 
@@ -125,6 +131,20 @@ inline DynamicTimeTable::Data loadDynamicTimeTable(const std::string& file,
     return dynamicTimeTable;
 }
 
+// Load an instance that a partitioned-only command needs, reporting the one way it can fail.
+// Every TREX customization command requires a partition, and an unpartitioned instance is a
+// user error (the partition file was never applied), not an exceptional condition -- so the
+// guard and its remedy live here once rather than at each command.
+inline std::optional<DynamicTimeTable::Data> loadPartitionedDynamicTimeTable(
+    const std::string& file, const std::string_view label = "DynamicTimeTable", const bool printInfo = true) {
+    DynamicTimeTable::Data dynamicTimeTable = loadDynamicTimeTable(file, label, printInfo);
+    if (!dynamicTimeTable.hasPartition()) {
+        std::cout << "No partition loaded -- run loadAndApplyDynamicPartition first." << std::endl;
+        return std::nullopt;
+    }
+    return dynamicTimeTable;
+}
+
 inline void printQueryDataSummary(const DynamicQueryData& queryData) {
     std::cout << "  Exported Routes: " << queryData.queryData.routeLabels.size() << std::endl;
     std::cout << "  Exported Trips: " << queryData.queryData.firstStopEventOfTrip.size() << std::endl;
@@ -167,8 +187,8 @@ inline std::size_t countTransferStoreEdges(Store& store) {
     return edgeCount;
 }
 
-template <typename Store>
-inline void printTransferStoreSummary(Store& store, TransferUpdater& updater) {
+template <typename Store, typename Updater>
+inline void printTransferStoreSummary(Store& store, Updater& updater) {
     std::cout << "  Nodes: " << store.node_count() << std::endl;
     std::cout << "  Edges: " << countTransferStoreEdges(store) << std::endl;
     printDegreeDistributions(updater.store_.edgeDegreeDistrebutionOut(), updater.store_.edgeDegreeDistrebutionIn());
@@ -274,7 +294,8 @@ inline bool validateDynamicQueryData(const DynamicQueryData& queryData,
     return true;
 }
 
-inline void buildInitialTransfers(TransferUpdater& updater,
+template <typename Updater>
+inline void buildInitialTransfers(Updater& updater,
                                   const DynamicQueryData& queryData,
                                   const TransferSetKind kind,
                                   const int numberOfThreads) {
@@ -284,7 +305,8 @@ inline void buildInitialTransfers(TransferUpdater& updater,
     }
 }
 
-inline void buildInitialTransfersForSelection(TransferUpdater& updater,
+template <typename Updater>
+inline void buildInitialTransfersForSelection(Updater& updater,
                                               const DynamicQueryData& queryData,
                                               const TransferSetSelection selection,
                                               const int numberOfThreads) {
@@ -294,7 +316,8 @@ inline void buildInitialTransfersForSelection(TransferUpdater& updater,
     }
 }
 
-inline TripBased::Transfers exportTransfers(const TransferUpdater& updater,
+template <typename Updater>
+inline TripBased::Transfers exportTransfers(const Updater& updater,
                                             const DynamicQueryData& queryData,
                                             const TransferSetKind kind,
                                             const int numberOfThreads,
@@ -392,7 +415,8 @@ public:
                                 const bool printSummary = false)
         : selection(selection), numberOfThreads(numberOfThreads), printSummary(printSummary) {}
 
-    void operator()(TransferUpdater& updater, const DynamicQueryData& queryData) const {
+    template <typename Updater>
+    void operator()(Updater& updater, const DynamicQueryData& queryData) const {
         std::cout << "Building initial transfer store..." << std::endl;
         const auto duration = timeAction([&]() {
             buildInitialTransfersForSelection(updater, queryData, selection, numberOfThreads);
@@ -456,8 +480,9 @@ private:
 // phases.exportPhase) after minimization, mirroring the configured "Transfer set"
 // parameter (full/reduced/both). Empty by default: callers that don't care about
 // export timing (e.g. RebuildComparator's own validation-only exports) pay nothing.
+template <typename Updater = TransferUpdater>
 inline TimedAppliedUpdate applyIncrementalUpdateTimed(DynamicTimeTable::Data& dynamicTimeTable,
-                                                       TransferUpdater& transferUpdater,
+                                                       Updater& transferUpdater,
                                                        const DynamicTimeTable::PendingUpdates& updates,
                                                        const int numberOfThreads,
                                                        const int nowSeconds = TransferUpdater::noTimeCutoff,
@@ -511,7 +536,7 @@ inline UpdateMemoryStats collectMemoryStats(const TransferStoreType& store, cons
 // Combined per-step CSV: phase timings + work counters + memory footprint.
 inline void writeCombinedCsvHeader(std::ostream& out) {
     out << "index,updateGeneration_us,timetableUpdate_us,queryDataExport_us,baseTransferUpdate_us,"
-           "minimizationUpdate_us,export_us,total_us,"
+           "minimizationUpdate_us,export_us,customization_us,rankWriteBack_us,total_us,"
            "cancelledTrips,outCleared,inCleared,discOut,discIn,outDiscovered,outAdded,outRemoved,"
            "inDiscovered,inAdded,inRemoved,domCleanups,domRemoved,arrivalTrips,arrivalUpstream,tripsMinimized,"
            "stopsScanned,candEvaluated,candKept,warmReplays,minFlips,affectedEventsL0,"
@@ -524,7 +549,8 @@ inline void writeCombinedCsvRow(long index, const PhaseTimings& t, const Transfe
                                 const UpdateMemoryStats& m, std::ostream& out) {
     out << index << ',' << t.updateGeneration.count() << ',' << t.timetableUpdate.count() << ','
         << t.queryDataExport.count() << ',' << t.baseTransferUpdate.count() << ',' << t.minimizationUpdate.count()
-        << ',' << t.exportPhase.count() << ',' << t.total().count() << ',' << c.cancelledTripsProcessed << ','
+        << ',' << t.exportPhase.count() << ',' << t.customization.count() << ',' << t.rankWriteBack.count() << ','
+        << t.total().count() << ',' << c.cancelledTripsProcessed << ','
         << c.outgoingEdgesCleared << ',' << c.incomingEdgesCleared << ','
         << c.discoverOutgoingEvents << ',' << c.discoverIncomingEvents << ',' << c.outgoingEdgesDiscovered << ','
         << c.outgoingEdgesAdded << ',' << c.outgoingEdgesRemoved << ',' << c.incomingEdgesDiscovered << ','
