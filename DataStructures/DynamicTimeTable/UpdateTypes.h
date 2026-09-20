@@ -43,6 +43,13 @@ struct PendingUpdates {
 
 struct CancelledTripInfo {
     PersistentTripId tripId;
+    // The persistent route the trip sat on *before* it was cancelled/extracted. The trip's own
+    // `route` field is cleared by the update, so this is the only surviving handle on the route
+    // whose stop sequence the TREX customization needs for its structural seed (a cancelled trip
+    // disturbs every cell its old route touched, not just the cells of its own stop events).
+    // noPersistentRouteId when the old route could not be resolved; consumers must then fall back
+    // to deriving cells from `eventsOfCancelledTrips`.
+    PersistentRouteId oldRoute = noPersistentRouteId;
     // Snapshot of previously ACTIVE stop events (non-skipped), in stop-index order.
     // The index in this vector corresponds to the stop index used by transfer updates.
     std::vector<PersistentStopEventId> eventsOfCancelledTrips;

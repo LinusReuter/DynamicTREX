@@ -83,7 +83,7 @@ private:
                 std::erase(list, tripId);
             }
 
-            context.summary.cancelledTrips.push_back(makeCancelledTripInfo(tripId, std::move(activeEvents)));
+            context.summary.cancelledTrips.push_back(makeCancelledTripInfo(tripId, oldRoute, std::move(activeEvents)));
             stats.successfulUpdates++;
         }
 
@@ -309,7 +309,7 @@ private:
             std::erase(list, tripId);
         }
 
-        context.summary.cancelledTrips.push_back(makeCancelledTripInfo(tripId, std::move(preActiveEvents)));
+        context.summary.cancelledTrips.push_back(makeCancelledTripInfo(tripId, oldRoute, std::move(preActiveEvents)));
         context.extractionQueue.push_back(tripId);
     }
 
@@ -324,10 +324,11 @@ private:
         }
     }
 
-    static CancelledTripInfo makeCancelledTripInfo(const PersistentTripId tripId,
+    static CancelledTripInfo makeCancelledTripInfo(const PersistentTripId tripId, const PersistentRouteId oldRoute,
                                                    std::vector<PersistentStopEventId>&& activeEvents) {
         CancelledTripInfo info;
         info.tripId = tripId;
+        info.oldRoute = oldRoute;
         info.eventsOfCancelledTrips = std::move(activeEvents);
         return info;
     }
