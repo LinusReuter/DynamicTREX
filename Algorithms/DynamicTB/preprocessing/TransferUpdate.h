@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <ranges>
 #include <span>
 #include <type_traits>
@@ -167,14 +168,25 @@ public:
             if (omp_get_num_threads() > 1) pinThreadToCoreId(omp_get_thread_num() % numberOfCores());
             std::vector<MinTarget> localTrips;
             std::vector<std::pair<NodeID, TransferMeta>> removedIncoming;
+            std::vector<std::pair<NodeID, TransferMeta>> removedOutgoing;
             TransferUpdateCounters lc;
             AffectedSink sink;
 #pragma omp for schedule(dynamic, 16)
             for (const auto& cancelledTrip : changes.cancelledTrips) {
                 if constexpr (collectTransferStats) ++lc.cancelledTripsProcessed;
                 for (const auto event : cancelledTrip.eventsOfCancelledTrips) {
-                    if constexpr (collectTransferStats) lc.outgoingEdgesCleared += store_.outgoing_unsorted(event).size();
-                    store_.clear_outgoing(event);
+                    // Remove edges and mark for custimization
+                    removedOutgoing.clear();
+                    store_.clear_outgoing_with_meta(event, removedOutgoing);
+                    if constexpr (collectTransferStats) lc.outgoingEdgesCleared += removedOutgoing.size();
+                    std::uint8_t outgoingBound = 0;
+                    bool anyMinimizedOutgoing = false;
+                    for (const auto& [to, meta] : removedOutgoing) {
+                        if (!meta.isMinimized) continue;
+                        anyMinimizedOutgoing = true;
+                        outgoingBound = std::max(outgoingBound, meta.rank);
+                    }
+                    if (anyMinimizedOutgoing) sink.markEvent(event, outgoingBound);
                     // Sources lose their outgoing edge into this cancelled event. Only a
                     // source whose edge was MINIMIZED can have its reduction change; a
                     // non-minimized edge writes no StopLabels during reduction, so its

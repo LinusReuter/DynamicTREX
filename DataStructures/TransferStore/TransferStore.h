@@ -335,6 +335,18 @@ public:
         return (it != storage.end()) ? it->meta : EdgeMeta{};
     }
 
+    bool readEdgeMetaLocked(NodeID from, NodeID to, EdgeMeta& out) override {
+        auto& lock = out_locks_[stripe_index(from)];
+        lock.lock();
+        const auto& storage = out_[from];
+        auto it = std::find_if(storage.begin(), storage.end(),
+                               [to](const OutEdge& e) { return e.to == to; });
+        const bool found = (it != storage.end());
+        if (found) out = it->meta;
+        lock.unlock();
+        return found;
+    }
+
     bool add_edge(NodeID from, NodeID to, const EdgeMeta& meta) override {
         log_modification(from, to, true);
         auto& lockF = out_locks_[stripe_index(from)];
@@ -398,6 +410,26 @@ public:
             auto& lock = in_locks_[stripe_index(e.to)];
             lock.lock();
             transfer_store_detail::swap_erase_if(in_[e.to], [from](NodeID n){ return n == from; });
+            lock.unlock();
+        }
+    }
+
+    void clear_outgoing_with_meta(NodeID from, std::vector<std::pair<NodeID, EdgeMeta>>& removed) override {
+        OutStorage out_edges;
+        {
+            auto& selfLock = out_locks_[stripe_index(from)];
+            selfLock.lock();
+            out_edges = std::move(out_[from]);
+            out_[from].clear();
+            selfLock.unlock();
+        }
+
+        removed.reserve(removed.size() + out_edges.size());
+        for (const auto& e : out_edges) {
+            removed.emplace_back(e.to, e.meta);
+            auto& lock = in_locks_[stripe_index(e.to)];
+            lock.lock();
+            transfer_store_detail::swap_erase_if(in_[e.to], [from](NodeID n) { return n == from; });
             lock.unlock();
         }
     }

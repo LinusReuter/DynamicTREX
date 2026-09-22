@@ -106,6 +106,21 @@ public:
     /// Returns read-only EdgeMeta of an given Edge.
     virtual EdgeMeta readEdgeMeta(NodeID from, NodeID to) const = 0;
 
+    /// Reads the meta of edge (from -> to) into `out` and reports whether the edge exists.
+    /// Unlike readEdgeMeta(), this is safe to call while other threads maintain the *opposite*
+    /// direction of `from` (which mirrors into its outgoing storage and may reallocate it).
+    /// Default: copy_outgoing() + scan (fine for stores that need no internal locking).
+    virtual bool readEdgeMetaLocked(NodeID from, NodeID to, EdgeMeta& out) {
+        std::vector<OutEdge> edges;
+        copy_outgoing(from, edges);
+        for (const OutEdge& edge : edges) {
+            if (edge.to != to) continue;
+            out = edge.meta;
+            return true;
+        }
+        return false;
+    }
+
     /// Add edge (from -> to) with metadata. Returns false if edge already exists.
     virtual bool add_edge(NodeID from, NodeID to, const EdgeMeta& meta) = 0;
 
@@ -122,6 +137,21 @@ public:
 
     /// Remove all incoming edges for `to`.
     virtual void clear_incoming(NodeID to) = 0;
+
+    /// Remove all outgoing edges for `from`, appending each removed edge as (target, meta) to
+    /// `removed`. The meta lives on the outgoing side, so this is the cheap direction: a
+    /// thread-safe store reports it while moving the storage out, with no extra scan over
+    /// clear_outgoing().
+    /// Default: copy_outgoing() + clear_outgoing().
+    virtual void clear_outgoing_with_meta(NodeID from, std::vector<std::pair<NodeID, EdgeMeta>>& removed) {
+        std::vector<OutEdge> edges;
+        copy_outgoing(from, edges);
+        removed.reserve(removed.size() + edges.size());
+        for (const OutEdge& edge : edges) {
+            removed.emplace_back(edge.to, edge.meta);
+        }
+        clear_outgoing(from);
+    }
 
     /// Remove all incoming edges for `to`, appending each removed edge as
     /// (source, meta) to `removed`. The meta is read from the source's outgoing

@@ -136,7 +136,7 @@ private:
 /**
  * @brief The incremental seed policy: mark only the cells one update can have disturbed.
  *
- * Three producers:
+ * Two producers:
  *
  *  - **direct** -- every event whose set of *minimized* transfers changed during this update.
  *    That set is a by-product the minimization stage already computes. `AffectedEventCollector`
@@ -145,43 +145,15 @@ private:
  *    changing its FIFO group. That is safe only because a trip changes route exclusively
  *    through `extractTrip`, which lands it in `cancelledTrips`, whose cancellation phase clears its
  *    incoming edges and marks every source.
- *  - **structural** -- every cell touched by the *old* route of a cancelled or extracted trip.
- *    Cancellation is the one disturbance the direct set cannot see, for two independent reasons:
- *    `TransferUpdate`'s cancellation phase clears a dying event's outgoing edges with no sink call
- *    at all, so the cell they were removed from gets no direct signal. Unchanged trips
- *    in that cell, which likewise produces no direct signal but may now need decrementing.
  *  - **cascade** -- see `MarkCascade`; it runs inside the level sweep rather than here.
  *
  * ### How high a seed is marked
  *
- * Each direct seed carries its own bound, produced by `markEdgeChanged` where the disturbance
- * happened: 0 for an edge *entering* the reduced set,
- * the departing edge's pre-update rank `r` for one *leaving* it. So an addition is marked at
- * level 0 only and the levels above it are reached by `MarkCascade` as ranks actually move, while
- * a removal is marked at levels `[0, r]` directly -- those are exactly the passes that used to
- * relax it. Collapsing the removal case to level 0 as well is *unsound*: a removed edge emits no
- * decision of its own, so nothing cascades, and the reached index's non-monotonicity means a
- * deletion can require a *raise* at level >= 1 while leaving every level-0 decision unchanged.
- * `markEdgeChanged` works that counterexample out in full.
- *
- * Two producers still fall back on the coarse `numberOfLevels - 1`, both because the pre-update
- * rank is not recoverable where they fire: `Preprocessing::unknownRankBound` (the mutator's
- * incoming removals, which have no metadata) and the structural seeds below. Over-marking is
- * safe, so these are a performance debt, not a correctness one.
- *
- * ### Why additions and in-place modifications seed nothing
- *
- * Both used to mark their whole route here, and both were removed once the full-customization diff
- * could confirm them redundant. The arguments are worth keeping, because they are what a future
- * change to the update pipeline would invalidate:
- *
- *  - **Additions.** A new incoming border event can mark something only if its seed trip has a
- *    *minimized* outgoing edge at an event inside the cell. They are marked during minimization
- *    as they are new
- *  - **In-place modifications.** A modification that survives `enforceFifo` keeps its route *and*
- *    its index in it; anything else is extracted and reappears as a cancellation plus an addition.
- *    Since the kernel reads no time, what is left cannot disturb a search at all -- only the
- *    transfer set it produced, which comes back through the direct set.
+ * Each direct seed carries its own bound, produced where the disturbance happened: 0 for an edge
+ * *entering* the reduced set, the departing edge's pre-update rank `r` for one *leaving* it. So an
+ * addition is marked at level 0 only and the levels above it are reached by `MarkCascade` as ranks
+ * actually move, while a removal is marked at levels `[0, r]` directly. Those are exactly the
+ * passes that used to relax it.
  */
 class IncrementalSeedPolicy {
 public:
@@ -205,8 +177,6 @@ public:
         }
 
         directSeeds_ = 0;
-        structuralSeeds_ = 0;
-        // The fallback for a disturbance whose reach is unknown: every level.
         const int coarseBound = net.levels - 1;
 
         if (affected_ != nullptr) {
@@ -223,38 +193,12 @@ public:
             }
         }
 
-        if (changes_ != nullptr) {
-            for (const auto& cancelled : changes_->cancelledTrips) {
-                if (cancelled.oldRoute != noPersistentRouteId) {
-                    markRoute(net, marks, cancelled.oldRoute, coarseBound);
-                    continue;
-                }
-                // Fallback for an update that could not resolve the old route. Not coarser than
-                // `markRoute`: `collectActiveEvents` snapshots the trip's whole effective stop
-                // sequence, which is its route's stop sequence.
-                for (const PersistentStopEventId event : cancelled.eventsOfCancelledTrips) {
-                    marks.markUpTo(cellOfPersistentEvent(net, event), coarseBound);
-                    ++structuralSeeds_;
-                }
-            }
-            // `addedTrips` and `modifiedEvents` deliberately seed nothing
-        }
-
         if constexpr (checkCustomizationInvariants) tripOrder_.snapshot(net);
     }
 
     std::size_t directSeeds() const noexcept { return directSeeds_; }
-    std::size_t structuralSeeds() const noexcept { return structuralSeeds_; }
 
 private:
-    void markRoute(const CellNetwork& net, CellMarks& marks, const PersistentRouteId route, const int levelBound) {
-        if (route == noPersistentRouteId) return;
-        for (const StopId stop : net.data->getRoute(route).stopSequence) {
-            marks.markUpTo(net.data->getCellIdOfStop(stop), levelBound);
-            ++structuralSeeds_;
-        }
-    }
-
     /**
      * The cell of a persistent event, whether or not it is still in the active timetable.
      */
@@ -269,7 +213,6 @@ private:
     const Preprocessing::AffectedEvents* affected_ = nullptr;
     const DynamicTimeTable::ChangeSummary* changes_ = nullptr;
     std::size_t directSeeds_ = 0;
-    std::size_t structuralSeeds_ = 0;
     TripFifoOrderWatch tripOrder_;
 };
 

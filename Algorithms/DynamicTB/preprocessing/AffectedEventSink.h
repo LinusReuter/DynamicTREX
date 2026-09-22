@@ -18,10 +18,6 @@ namespace DynamicTB::Preprocessing {
  * into/out of the reduced set). That delta is the seed the bottom-up TREX customization
  * starts from.
  *
- * Note: `TransferUpdate`'s cancellation phase clears a dying event's outgoing edges with no
- * sink call at all, so this set is deliberately incomplete. `IncrementalSeedPolicy`'s structural
- * producer is its complement, and neither is complete without the other.
- *
  * ### Why each mark carries a rank
  *
  * `CellTransferSearch::enqueue` relaxes an edge only while `rank >= level`, and a search is cut
@@ -77,10 +73,6 @@ namespace DynamicTB::Preprocessing {
 
 /**
  * @brief Bound for a disturbance whose pre-update rank cannot be recovered at the call site.
- *
- * Means "mark every level": always sound, never cheap. Incoming adjacency carries no metadata, so
- * `TransferStoreMutator`'s incoming removals cannot tell what rank the mirrored outgoing edge
- * held; every other site knows it exactly. Grep this name to find what is left to tighten.
  */
 inline constexpr std::uint8_t unknownRankBound = 0xFF;
 

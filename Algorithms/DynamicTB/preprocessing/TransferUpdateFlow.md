@@ -32,7 +32,8 @@ calls inline rather than dispatching through `ITransferStore`) and on the affect
 0) store.add_nodes(maxEventId); allowTemporaryInconsistent(true)
 
 Phase 1: Cancellations                                      [parallel, then sync_barrier]
-  - clear_outgoing(event)
+  - clear_outgoing_with_meta(event) -> if any removed edge was minimized:
+        AffectedSink::markEvent(event, max rank)
   - clear_incoming_with_meta(event) -> per removed edge with isMinimized:
         flag source trip for re-minimization
         AffectedSink::markEvent(source)          <- reduced set shrank at the source
@@ -48,9 +49,8 @@ Phase 2: Outgoing discovery                                 [parallel, then sync
 Phase 3: Incoming discovery                                 [parallel, then sync_barrier]
   - computeIncomingTransfers -> applyIncomingDiff
   - every add/remove flags the source trip
-  - removals mark the affected set unconditionally: incoming storage carries no metadata,
-    so we cannot tell whether the mirrored outgoing edge was minimized. Over-approximating
-    is safe; missing an entry would leave a rank too low.
+  - a removal reads the mirrored outgoing edge's meta (readEdgeMetaLocked, before commit_batch
+    erases it) and marks only if that edge was MINIMIZED, bounded by its rank
   - inserts record a deferred PendingDominationCleanup
 
 Domination cleanup                                          [sequential]
@@ -72,5 +72,3 @@ Stops above the warm-start boundary only **replay** already-kept edges (no decis
 affected-set entries). At and below it, candidates are sorted by destination arrival and
 folded; every `isMinimized` **flip** is reported to the sink, and an edge leaving the
 reduced set has its `rank` reset to 0.
-
-

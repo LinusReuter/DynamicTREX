@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <span>
 #include <vector>
@@ -134,15 +135,17 @@ public:
             store_.incoming_sorted(toEvent), desired, [](PersistentStopEventId from) { return from; },
             [&](PersistentStopEventId from) {
                 if constexpr (collectTransferStats) ++lc.incomingEdgesRemoved;
+                // Incoming storage carries no metadata, but the mirrored outgoing edge is still
+                // intact here. Export for the costimization marker
+                TransferMeta mirrored{};
+                const bool found = store_.readEdgeMetaLocked(from, toEvent, mirrored);
                 store_.remove_incoming_edge(batch, from);
                 recordSourceTripOfEvent(from, localTrips);
-                // Incoming storage carries no metadata, so we cannot tell whether the
-                // mirrored outgoing edge was in the reduced set, nor what rank it held. Mark
-                // unconditionally and at every level: over-approximating the affected set only
-                // costs extra customization work, while missing an entry would leave a rank too
-                // low (i.e. wrong answers). This is the one site left paying the coarse bound --
-                // tightening it needs the mirrored edge's rank carried on the incoming side.
-                sink.markEdgeChanged(from, toEvent, unknownRankBound);
+                if (!found) {
+                    assert(false); // should never exist
+                } else if (mirrored.isMinimized) {
+                    sink.markEdgeChanged(from, toEvent, mirrored.rank);
+                }
             },
             [&](PersistentStopEventId from) {
                 if constexpr (collectTransferStats) ++lc.incomingEdgesAdded;

@@ -100,7 +100,6 @@ inline TripBased::Transfers buildReducedExport(Updater& updater, const DynamicQu
 struct CustomizationStepResult {
     std::size_t rankChanges = 0;
     std::size_t seedsDirect = 0;
-    std::size_t seedsStructural = 0;
     std::size_t reducedEdges = 0;
     bool checked = false;
     RankComparison comparison{};
@@ -197,7 +196,6 @@ public:
         CustomizationStepResult result;
         result.rankChanges = incremental_.changes().size();
         result.seedsDirect = incremental_.seeds().directSeeds();
-        result.seedsStructural = incremental_.seeds().structuralSeeds();
         result.reducedEdges = csr_.labels.size();
         if (!check) return result;
 
@@ -231,8 +229,8 @@ private:
 };
 
 inline void printStepResult(const CustomizationStepResult& result, std::ostream& out) {
-    out << "  Reduced edges: " << result.reducedEdges << ", seeds: " << result.seedsDirect << " direct / "
-        << result.seedsStructural << " structural, rank changes: " << result.rankChanges << "\n";
+    out << "  Reduced edges: " << result.reducedEdges << ", seeds: " << result.seedsDirect
+        << ", rank changes: " << result.rankChanges << "\n";
     if (!result.checked) return;
     out << "  Full-customization diff: " << result.comparison.mismatches << " mismatch(es) over "
         << result.comparison.edgesCompared << " edges (under " << result.comparison.underApproximated << ", over "
